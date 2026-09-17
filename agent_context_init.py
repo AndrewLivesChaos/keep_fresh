@@ -1339,10 +1339,12 @@ if __name__ == "__main__":
 #   status.md          stato corrente, difetti aperti, registro di collaudo, cronologia
 # docs/                documentazione dell'applicazione, per le persone
 #
+# docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
+#
 # scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
-# scripts/agent_context_init.py  porta tutto questo su un altro repo, in un file solo
-# .claude/settings.json        hook versionati (SessionStart, Stop)
+# scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
 # .claude/hooks/               hooklib.py + session_start.py + stop_check.py
+# .claude/settings.local.json  aggancio degli hook, NON versionato: uno per macchina
 # ```
 #
 # Adatta i nomi al progetto, non la logica della divisione. **Scrivi gli script in Python**,
@@ -1352,29 +1354,38 @@ if __name__ == "__main__":
 #
 # ## Portare questa struttura su un altro progetto
 #
-# Non copiare file a mano: c'è **un inizializzatore**, `scripts/agent_context_init.py`, che
-# è un solo file Python senza dipendenze e porta il payload dentro di sé.
+# Non copiare file a mano: c'è **un inizializzatore**, `agent_context_init.py`, che è un
+# solo file Python senza dipendenze e porta il payload dentro di sé. Lo si copia nel repo e
+# lo si lancia; funziona anche in un repo appena creato con `git init`, senza codice.
 #
 # ```
-# cp .../agent_context_init.py .        # nel repo da inizializzare
 # python agent_context_init.py --dry-run   # dice cosa farebbe
-# python agent_context_init.py             # scrive lint, hook, settings, scheletro
+# python agent_context_init.py             # scrive lint, hook, aggancio, scheletri
 # ```
 #
-# Crea `scripts/docs_lint.py`, `.claude/hooks/{hooklib,session_start,stop_check}.py`,
-# `.claude/settings.json` **con l'interprete giusto per la piattaforma** (`python` su
-# Windows, `python3` altrove — rilancialo sull'altra macchina e si adegua), questa guida,
-# uno scheletro di `status.md` già marcato, e le righe di `.gitignore`. Non sovrascrive
-# niente senza `--force`, ed è idempotente. Alla fine stampa il prompt da incollare.
+# Crea `scripts/docs_lint.py`, `scripts/context_core.py`,
+# `.claude/hooks/{hooklib,session_start,stop_check}.py`, questa guida, uno scheletro di
+# `status.md`, una `config.toml` vuota, e aggancia gli hook in
+# `.claude/settings.local.json` **con l'interprete giusto per la macchina** (`python` su
+# Windows, `python3` altrove). Non sovrascrive niente senza `--force`, ed è idempotente.
+# Alla fine stampa il prompt da incollare.
+#
+# **L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
+# dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbe con il
+# repo e arriverebbe sbagliato sull'altra piattaforma, e gli hook, essendo fail-open, non
+# girerebbero senza dirlo. Per questo **non dichiarare mai gli hook in
+# `.claude/settings.json`**: dichiarati sia lì sia nel file locale girano due volte. Il
+# prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
+# volta su quella macchina: va detto all'utente.
 #
 # **Su un repo che ha già un contesto** non si perde niente: ogni file esistente viene
 # rispettato, non sovrascritto. Ma proprio per questo resta **mezzo cablato**, e in modi
 # silenziosi — è il caso che va gestito bene, non quello del repo vuoto:
 #
-# - `.claude/settings.json`, se esiste, va **fuso**: aggiungere solo gli hook mancanti e
-#   lasciare intatto il resto. Saltarlo perché esiste lascia gli script su disco senza che
-#   niente li invochi, e gli hook sono fail-open: nessuno se ne accorge. Sovrascriverlo
-#   cancella i permessi già configurati. Nessuna delle due è accettabile.
+# - `.claude/settings.local.json`, se esiste, va **fuso**: aggiungere solo gli hook
+#   mancanti e lasciare intatto il resto. Saltarlo perché esiste lascia gli script su disco
+#   senza che niente li invochi, e gli hook sono fail-open: nessuno se ne accorge.
+#   Sovrascriverlo cancella i permessi già configurati. Nessuna delle due è accettabile.
 # - Un `status.md` scritto prima **non ha i marcatori**: né `context-verified-at`, né i
 #   blocchi `session-start`. Gli hook girano e non hanno niente su cui lavorare.
 #
@@ -1384,10 +1395,11 @@ if __name__ == "__main__":
 # dire cosa ha lasciato a metà.
 #
 # **Aggiornare un repo gia' inizializzato**: `--force` riscrive i file **gestiti** — lint,
-# hook, guida — alla versione di riferimento, e **non tocca mai** `docs/context/status.md`,
-# che dal primo giorno contiene lavoro umano. La distinzione fra file gestiti e file seme
-# e' quella che rende `--force` sicuro da usare: senza, aggiornare uno script
-# significherebbe cancellare lo stato del progetto, e nessuno lo farebbe mai.
+# modulo comune, hook, guida — alla versione di riferimento, e **non tocca mai** i file
+# **seme**, `docs/context/status.md` e `docs/context/config.toml`, che dal primo giorno
+# contengono lavoro umano. La distinzione fra file gestiti e file seme e' quella che rende
+# `--force` sicuro da usare: senza, aggiornare uno script significherebbe cancellare lo
+# stato del progetto o la taratura, e nessuno lo farebbe mai.
 #
 # E' il caso che si presenta subito: un repo dove la guida era stata copiata a mano tempo
 # prima ha una versione superata proprio del file che dice all'agente cosa fare. Va
@@ -1397,19 +1409,21 @@ if __name__ == "__main__":
 # il repo e chiedendo all'utente ciò che nel repo non c'è. Lo script prepara il terreno; il
 # lavoro lo fa l'agente col prompt che ti stampa.
 #
-# **Le costanti rilevabili le scrive lui.** Dove sta il codice, che estensioni ha, cosa
-# sorveglia lo `Stop`: le deduce da `git ls-files` e le stampa, così sono correggibili a
-# colpo d'occhio. Non c'è niente da ritarare a mano lì.
+# **Dove sta il codice non si scrive da nessuna parte.** Lint e hook lo rilevano a ogni
+# esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Un progetto che nasce
+# vuoto, cresce o si riorganizza resta sorvegliato senza toccare niente. Il lint stampa cosa
+# ha rilevato nel controllo 0: se sbaglia, si corregge con `[code] include` ed `exclude` in
+# `docs/context/config.toml`, non modificando gli script.
 #
-# Restano vuote di proposito `NOT_SYMBOLS`, `EXPECTED_ABSENT` ed `EXTERNAL_SYMBOLS`: sono
-# lavoro di **dominio**, non deducibile dall'albero, e si riempiono guardando i falsi
-# positivi del primo giro di lint. `NOT_SYMBOLS` in particolare contiene parole di prosa
-# nella lingua dei documenti.
+# Restano vuote di proposito le tabelle `[lint.not_symbols]`, `[lint.expected_absent]`,
+# `[lint.external_symbols]` e `[lint.received_docs]` di `config.toml`: sono lavoro di
+# **dominio**, non deducibile dall'albero, e si riempiono guardando i falsi positivi del
+# primo giro di lint. `not_symbols` in particolare contiene parole di prosa nella lingua dei
+# documenti.
 #
-# **Mantenere l'inizializzatore.** Il payload è una copia, e una copia diverge. Per questo
-# esiste `--pack`: eseguito nel progetto di riferimento, rigenera il payload dai file veri e
-# **verifica che il file riscritto si esegua ancora** prima di dichiarare fatto. Quando
-# migliori il lint o un hook, rilancialo.
+# **Non modificare gli script installati.** Sono gestiti: `--force` li riporta alla versione
+# di riferimento. Una correzione fatta lì dentro si perde al primo aggiornamento; se serve,
+# va fatta nello strumento, non nella copia.
 #
 # **Come chiederlo all'agente.** L'inizializzatore stampa il prompt, ed è questo. Due frasi
 # cambiano l'esito, e vanno messe entrambe:
@@ -1418,8 +1432,8 @@ if __name__ == "__main__":
 # > operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
 # > quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
 # > codice, verifiche fatte a mano. In `scripts/` e `.claude/` trovi già il lint e gli hook
-# > e **non vanno riscritti**: le costanti che dicono dove sta il codice sono già rilevate,
-# > restano da riempire solo le liste di dominio, guardando i falsi positivi del primo giro.
+# > e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
+# > solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
 #
 # Senza la prima, la guida viene letta come documentazione *sul* progetto di origine invece
 # che come compito. Senza la seconda, i buchi vengono riempiti per plausibilità invece che
@@ -1647,21 +1661,18 @@ if __name__ == "__main__":
 # | 4 | **Link e ancore** | un rimando o un'ancora che non risolve |
 # | 5 | **Freschezza** | quanti commit hanno toccato il codice dopo il marcatore `context-verified-at` |
 #
-# Esce non-zero se trova errori. Quattro scelte di progetto che contano:
+# Esce non-zero se trova errori. Le scelte di progetto che contano:
 #
-# - **Le costanti tarabili stanno in un blocco delimitato**, e chi trasporta lo script le
-#   sostituisce con valori neutri. E' la differenza fra portabile e portabile a parole: le
-#   estensioni, i divieti e il lessico del progetto di origine sono **sbagliati per
-#   costruzione** altrove — `.dts` non significa niente in un repo TypeScript — e lasciarli
-#   scaricando la ritaratura sull'agente sposta il lavoro senza risolverlo. Le due categorie
-#   vanno separate:
-#   - **rilevabile dal repo** (dove sta il codice, che estensioni ha, cosa sorvegliare): lo
-#     deduce l'inizializzatore da `git ls-files`, che gia' distingue le sorgenti da build,
-#     cache e dipendenze. Su un progetto TypeScript trova `src, api` e
-#     `.ts .tsx .js .scss .json`; su uno PlatformIO, `include, lib, src` e `.cpp .h .ini`.
-#   - **non rilevabile** (i divieti, il lessico di prosa): parte **vuota**, con il formato e
-#     l'obbligo del motivo scritti nel commento. Un elenco vuoto e' onesto; un elenco pieno
-#     di roba di un altro progetto silenzia i controlli veri.
+# - **Cio' che e' rilevabile si rileva a ogni esecuzione, non si scrive.** Dove sta il
+#   codice lo dicono i file che git conosce, che gia' distingue le sorgenti da build, cache e
+#   dipendenze. Una costante scritta al momento dell'installazione e' giusta quel giorno e
+#   falsa appena il progetto cresce: un repo nato vuoto resterebbe sorvegliato su una
+#   cartella che non esiste. Lint e hook usano lo **stesso** modulo per rilevarlo, o
+#   finiscono per rispondere in modo diverso alla stessa domanda.
+# - **Cio' che non e' rilevabile sta in un file seme** (`config.toml`: i divieti, il
+#   lessico di prosa, le eccezioni), che parte **vuoto** con il formato e l'obbligo del
+#   motivo scritti nei commenti, e che nessun aggiornamento sovrascrive. Un elenco vuoto e'
+#   onesto; un elenco pieno di roba di un altro progetto silenzia i controlli veri.
 # - **Assenza non e' errore.** `invariants.md` che non c'e' ancora, la sezione dei divieti
 #   mancante, nessun `verificato`: in un progetto appena inizializzato sono lo stato
 #   normale. Vanno segnalati come avvisi che dichiarano quale controllo e' inattivo, non
@@ -1669,8 +1680,8 @@ if __name__ == "__main__":
 # - **Confronto per sottostringa** sugli identificatori. I documenti citano di proposito la
 #   coda di un enum lungo (`INFO_ID_STREAM` per `USB_CONNECTION_PACKET_INFO_ID_STREAM`): è
 #   la regola dell'altitudine, e il controllo deve tollerarla o diventa rumore.
-# - **Due tabelle di eccezioni con il motivo obbligatorio**: `EXPECTED_ABSENT` (assente per
-#   costruzione: un id ritirato, un modulo rimosso) e `EXTERNAL_SYMBOLS` (esiste, ma in una
+# - **Tabelle di eccezioni con il motivo obbligatorio**: `expected_absent` (assente per
+#   costruzione: un id ritirato, un modulo rimosso) ed `external_symbols` (esiste, ma in una
 #   libreria, non nel tuo albero). Senza motivo scritto non si aggiunge niente, o in sei mesi
 #   la lista è una discarica che silenzia i controlli veri.
 # - **Solo i file tracciati** per il controllo dei link: un documento di appunti non
@@ -1682,9 +1693,14 @@ if __name__ == "__main__":
 # ### 2. Gli hook — li esegue l'harness, non l'agente
 #
 # È tutta la differenza: `CLAUDE.md`, `AGENTS.md` e le skill dipendono dall'aderenza
-# dell'agente, che è la variabile che sta fallendo. Un hook parte comunque. Vanno in un file
-# di configurazione **versionato**, così valgono su ogni macchina; i permessi locali della
-# macchina restano in un file separato, ignorato da git.
+# dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
+#
+# Gli **script** degli hook sono versionati; il loro **aggancio** no. Il comando che li
+# invoca contiene l'interprete, che cambia da macchina a macchina, quindi sta nella
+# configurazione locale (`.claude/settings.local.json`, ignorata da git) e lo scrive
+# l'inizializzatore su ogni macchina. Non spostarlo nella configurazione versionata "perché
+# valga ovunque": arriverebbe sbagliato sull'altra piattaforma, e se resta anche nel file
+# locale gli hook girano due volte.
 #
 # **`SessionStart`** — inietta in contesto, a ogni avvio (`/clear` e compattazione compresi),
 # le sezioni volatili: cosa è bloccato, cosa è rotto, il cruscotto dell'evidenza, e un avviso
@@ -1818,7 +1834,9 @@ if __name__ == "__main__":
 # - [ ] Le verifiche manuali sono un registro con `Esito | Data | Chi`, non una checklist.
 # - [ ] Il lint esiste, è versionato, **gira pulito**, e il suo output è stato mostrato
 #       all'utente.
-# - [ ] Gli hook esistono, sono versionati e fail-open, e sono stati **provati** nei casi
+# - [ ] Gli script degli hook esistono, sono versionati e fail-open, e il loro aggancio sta
+#       **solo** nella configurazione locale della macchina, non in quella versionata.
+# - [ ] Gli hook sono stati **provati** nei casi
 #       taci / blocca / non ripetere / input malformato.
 # - [ ] Esiste una traccia su file degli hook, e all'utente è stato spiegato come leggerla —
 #       non come «guardare se compare qualcosa a schermo».
