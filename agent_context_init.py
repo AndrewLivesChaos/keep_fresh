@@ -62,9 +62,9 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-17T13:09:00',
+    'packed_at': '2026-09-17T13:19:58',
     'source': 'context_script',
-    'commit': '30e7f98',
+    'commit': '905fc70',
     'payload_dirty': False,
     'payload_sha': '7439c16dd133',
 }
@@ -1114,15 +1114,16 @@ def main() -> int:
 
     problemi = (diagnose(root, interp) + version_drift(root, payload)
                 if not args.dry_run else [])
+    # L'elenco si stampa UNA volta, dentro il prompt: e' li' che serve, perche' il prompt
+    # e' cio' che si copia all'agente. Qui sopra resta solo l'avviso che c'e'.
     if not args.dry_run:
         if problemi:
             n = len(problemi)
             print("\n" + "!" * 74)
             print(f"DA SISTEMARE — {n} cosa non funziona ancora." if n == 1
                   else f"DA SISTEMARE — {n} cose non funzionano ancora.")
+            print("L'elenco e' in fondo al prompt qui sotto, per l'agente o per te.")
             print("!" * 74)
-            for n, msg in enumerate(problemi, 1):
-                print(f"  {n}. {msg}")
         else:
             print("\n  Diagnosi: tutto agganciato, marcatori a posto.")
 
@@ -1143,7 +1144,7 @@ chiesto nel prompt qui sotto.
         print()
         print("Inoltre l'inizializzatore ha lasciato aperti questi punti, sistemali:")
         for n, msg in enumerate(problemi, 1):
-            print(f"{n}. {msg}")
+            print(f"  {n}. {msg}")
     print("-" * 74)
     print("""
 2. Quando ha finito, verifica tu:
