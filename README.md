@@ -54,6 +54,7 @@ rilancia lo script una volta: lo aggiunge da solo, se `status.md` è ancora lo s
 | `scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
 | `.claude/hooks/*.py` | gestito | come sopra |
 | `docs/agent_docs_guide.md` | gestito | come sopra. La guida che l'agente esegue |
+| `scripts/agent_context_version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
 | `docs/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
 | `docs/context/config.toml` | **seme** | come sopra. La taratura fatta a mano |
 | `.claude/settings.local.json` | **fuso** | ci aggiunge i due hook, lascia intatto il resto. Non tracciato da git |
@@ -106,6 +107,22 @@ codice, compresi script e file di build nella radice. Il lint e l'hook di fine t
 possono quindi segnalare commit che prima ignoravano; se non sono codice per te, vanno in
 `[code] exclude`.
 
+## Quale versione è installata
+
+Ogni copia dello script porta un **timbro**, scritto da `--pack`: data, repository sorgente,
+commit, se `payload/` aveva modifiche non committate, e un hash del contenuto installato.
+Due copie con lo stesso hash installano gli stessi file.
+
+```powershell
+python agent_context_init.py --version
+```
+
+L'inizializzazione registra il timbro in `scripts/agent_context_version.json` del
+repository di destinazione. Quando rilanci lo script, la diagnosi confronta il
+**contenuto** dei file gestiti installati con quello della copia che stai usando, e se
+differiscono mostra le due versioni: se la tua è più recente, `--force` aggiorna. Se quei
+file sono stati modificati a mano, `--force` cancella le modifiche.
+
 ## Verifica
 
 ```powershell
@@ -126,7 +143,8 @@ che non girano.
 | `--dry-run` | dice cosa farebbe, non scrive niente |
 | `--force` | aggiorna i file gestiti; i semi non vengono mai toccati |
 | `--pack` | solo in questo repository: rigenera il payload da `payload/` |
-| `--self-test` | verifica che il payload sia leggibile ed esce |
+| `--self-test` | verifica che il payload sia leggibile e coincida col timbro, ed esce |
+| `--version` | dice da dove e quando viene questa copia ed esce |
 
 ## Se qualcosa non torna
 
@@ -154,6 +172,15 @@ python agent_context_init.py --pack
 `--pack` impacchetta tutto `payload/` in coda allo script, controlla che lo script
 riscritto si esegua e rilegga il payload, e poi lo usa su un repository finto dall'inizio:
 cartella vuota, primo commit, codice che compare dopo in una directory qualunque, hook di
-fine turno e di avvio. Se qualcosa non va, esce con errore invece di dire "fatto". Dopo,
-committa `payload/` e `agent_context_init.py` insieme: uno script con il payload vecchio è
-una copia che diverge.
+fine turno e di avvio, versione registrata e deriva segnalata. Se qualcosa non va, esce con
+errore invece di dire "fatto".
+
+Perché il timbro nomini un commit che contiene davvero il payload impacchettato:
+
+1. modifica `payload/`, lancia `--pack` finché la prova a vuoto passa;
+2. committa `payload/` e `agent_context_init.py`;
+3. rilancia `--pack`: ora `payload/` è committato e il timbro lo dice;
+4. committa `agent_context_init.py`.
+
+Se impacchetti con `payload/` modificato, il timbro lo dichiara (`payload con modifiche NON
+committate`) e `--pack` lo ricorda. Il contenuto resta comunque identificato dall'hash.

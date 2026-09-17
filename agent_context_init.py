@@ -57,6 +57,25 @@ SENTINEL = "# ==== PAYLOAD (rigenerabile con --pack, non modificare a mano) ====
 FILE_HDR = "# ---- AGENT-CONTEXT-FILE: "
 FILE_END = " ----"
 
+# Il timbro dice da dove e quando viene questa copia. Lo scrive --pack fra le due righe
+# qui sotto: ogni copia dello script e' una fotografia, e senza timbro due copie
+# diverse sono indistinguibili finche' non si confronta il contenuto a mano.
+# ==== TIMBRO (scritto da --pack) ====
+STAMP = {
+    'packed_at': '2026-09-17T13:07:58',
+    'source': 'context_script',
+    'commit': '9f7a508',
+    'payload_dirty': True,
+    'payload_sha': '7439c16dd133',
+}
+# ==== TIMBRO (fine) ====
+STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
+                      r"^# ==== TIMBRO \(fine\) ====$", re.S | re.M)
+
+# Dove il repository di destinazione registra quale versione ha installato. E' un file
+# gestito: lo aggiorna --force insieme agli altri.
+VERSION_FILE = "scripts/agent_context_version.json"
+
 # Nel repository sorgente dello strumento, i file veri del payload stanno qui, con gli
 # stessi percorsi che avranno nel repository di destinazione.
 PAYLOAD_DIR = "payload"
@@ -203,6 +222,52 @@ def payload_core(payload: dict):
     return mod
 
 
+def payload_hash(files: dict) -> str:
+    """
+    L'identita' del contenuto del payload: due copie con lo stesso hash installano gli
+    stessi file, qualunque cosa dicano data e commit. Si calcola sul contenuto come lo
+    rilegge load_payload, cosi' --self-test puo' ricalcolarlo e confrontarlo.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for rel in sorted(files):
+        h.update(rel.encode("utf-8") + b"\0" + files[rel].encode("utf-8") + b"\0")
+    return h.hexdigest()[:12]
+
+
+def describe_stamp(stamp: dict) -> str:
+    if not stamp:
+        return "senza timbro (copia mai impacchettata con --pack)"
+    stato = ("payload committato" if not stamp.get("payload_dirty")
+             else "payload con modifiche NON committate")
+    return (f"{stamp.get('packed_at', '?')}, {stamp.get('source', '?')}@"
+            f"{stamp.get('commit') or 'nessun commit'} ({stato}), "
+            f"payload {stamp.get('payload_sha', '?')}")
+
+
+def make_stamp(root: Path, files: dict) -> dict:
+    """
+    Il timbro di questo impacchettamento. La data resta quella del timbro precedente se
+    non e' cambiato niente di cio' che il timbro descrive: impacchettare due volte lo
+    stesso contenuto non deve produrre una copia "diversa".
+    """
+    remote = git(root, "remote", "get-url", "origin")
+    stamp = {
+        "source": remote or root.name,
+        "commit": head_sha(root),
+        # Il timbro nomina un commit: se payload/ ha modifiche non committate, il
+        # contenuto impacchettato non e' quello di quel commit, e va detto.
+        "payload_dirty": bool(git(root, "status", "--porcelain", "--", PAYLOAD_DIR)),
+        "payload_sha": payload_hash(files),
+    }
+    same = all(STAMP.get(k) == v for k, v in stamp.items())
+    from datetime import datetime
+    stamp["packed_at"] = (STAMP["packed_at"] if same and STAMP.get("packed_at")
+                          else datetime.now().isoformat(timespec="seconds"))
+    return {k: stamp[k] for k in ("packed_at", "source", "commit", "payload_dirty",
+                                  "payload_sha")}
+
+
 def pack(root: Path) -> int:
     """Rigenera il payload dai file veri in payload/."""
     base = root / PAYLOAD_DIR
@@ -217,7 +282,7 @@ def pack(root: Path) -> int:
         print(f"  {PAYLOAD_DIR}/ e' vuota: niente da impacchettare", file=sys.stderr)
         return 1
 
-    blocks = []
+    blocks, contents = [], {}
     for p in files:
         rel = p.relative_to(base).as_posix()
         text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
@@ -226,6 +291,7 @@ def pack(root: Path) -> int:
             return 1
         commented = "\n".join(("# " + l) if l else "#" for l in text.split("\n"))
         blocks.append(f"{FILE_HDR}{rel}{FILE_END}\n{commented}")
+        contents[rel] = text.strip("\n") + "\n"
         print(f"  impacchettato  {rel}  ({len(text)} byte)")
 
     head, _ = split_on_sentinel(own_source())
@@ -233,8 +299,22 @@ def pack(root: Path) -> int:
         print("  il sentinella compare meno di due volte: sorgente non integro",
               file=sys.stderr)
         return 1
+    if len(STAMP_RE.findall(head)) != 1:
+        print("  i marcatori del timbro non compaiono esattamente una volta: sorgente "
+              "non integro", file=sys.stderr)
+        return 1
+    stamp = make_stamp(root, contents)
+    literal = ("STAMP = {\n" + "".join(f"    {k!r}: {v!r},\n" for k, v in stamp.items())
+               + "}")
+    head = STAMP_RE.sub(lambda _: "# ==== TIMBRO (scritto da --pack) ====\n" + literal
+                        + "\n# ==== TIMBRO (fine) ====", head)
     Path(__file__).write_text(head + SENTINEL + "\n" + "\n".join(blocks) + "\n",
                               encoding="utf-8", newline="\n")
+    print(f"\nTimbro: {describe_stamp(stamp)}")
+    if stamp["payload_dirty"]:
+        print(f"  ATTENZIONE: {PAYLOAD_DIR}/ ha modifiche non committate. Il timbro lo "
+              f"dichiara, ma il commit che nomina non contiene questo payload: per una "
+              f"copia rintracciabile committa {PAYLOAD_DIR}/ e rilancia --pack.")
 
     # Il file appena riscritto deve ancora eseguirsi e rileggere il proprio payload.
     # Senza questo controllo, --pack puo' lasciare uno script rotto e dire "fatto".
@@ -332,6 +412,34 @@ def smoke_test() -> bool:
              f"exit {r.returncode}")
         step("nessun __pycache__ lasciato nel repository",
              not any(tmp.rglob("__pycache__")))
+
+        # 4. Versione: registrata all'installazione, deriva segnalata, --force la sana.
+        try:
+            rec = json.loads((tmp / VERSION_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rec = {}
+        # Il timbro va riletto dal file: questo processo e' partito prima che --pack lo
+        # riscrivesse, e in memoria ha ancora quello vecchio.
+        head, _ = split_on_sentinel(own_source())
+        m = STAMP_RE.search(head or "")
+        try:
+            written = ast.literal_eval(m.group(0).split("STAMP = ", 1)[1]
+                                       .rsplit("# ==== TIMBRO (fine)", 1)[0].strip())
+        except (AttributeError, IndexError, ValueError, SyntaxError):
+            written = None
+        step("la versione installata e' registrata col timbro dello script",
+             bool(written) and rec == written, f"registrata {rec}, timbro {written}")
+        lint_py = tmp / "scripts" / "docs_lint.py"
+        lint_py.write_text(lint_py.read_text(encoding="utf-8") + "# ritocco\n",
+                           encoding="utf-8")
+        r = run(*init)
+        step("un file gestito diverso dal payload viene segnalato",
+             "non coincidono con questa copia" in r.stdout and "docs_lint.py" in r.stdout,
+             r.stdout[-600:])
+        r = run(*init, "--force")
+        r2 = run(*init)
+        step("--force riallinea e la segnalazione sparisce",
+             r.returncode == 0 and "non coincidono" not in r2.stdout, r2.stdout[-600:])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -825,6 +933,46 @@ def diagnose(root: Path, interp: str) -> list:
     return problemi
 
 
+def version_drift(root: Path, payload: dict) -> list:
+    """
+    I file gestiti installati sono quelli di questa copia dello script? Si confronta il
+    CONTENUTO, non la registrazione: la registrazione dice chi li ha scritti, ma un file
+    toccato a mano dopo non lo dice nessuno.
+    """
+    lint = root / "scripts" / "docs_lint.py"
+    if lint.is_file() and "context_core" not in lint.read_text(encoding="utf-8",
+                                                               errors="replace"):
+        return []                       # versione precedente: la diagnosi lo dice gia'
+
+    diversi = []
+    for rel, content in payload.items():
+        p = root / rel
+        if rel in SEED_FILES or not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+        except (OSError, UnicodeDecodeError):
+            text = None
+        if text is None or text.strip("\n") != content.strip("\n"):
+            diversi.append(rel)
+    if not diversi:
+        return []
+
+    try:
+        installata = describe_stamp(json.loads((root / VERSION_FILE).read_text(
+            encoding="utf-8")))
+    except (OSError, ValueError):
+        installata = "non registrata"
+    return [
+        f"{len(diversi)} file gestiti non coincidono con questa copia dello script: "
+        f"{', '.join(diversi)}.\n"
+        f"     Installata: {installata}\n"
+        f"     Questa    : {describe_stamp(STAMP)}\n"
+        f"     Se questa e' piu' recente, rilancia con --force (status.md e config.toml "
+        f"non vengono toccati).\n     Se quei file sono stati modificati a mano, "
+        f"--force cancella le modifiche: guardale prima."]
+
+
 def ensure_gitignore(root: Path, dry: bool) -> str:
     gi = root / ".gitignore"
     text = gi.read_text(encoding="utf-8") if gi.is_file() else ""
@@ -852,15 +1000,29 @@ def main() -> int:
                     help="nel repository sorgente dello strumento: rigenera il payload "
                          "da payload/")
     ap.add_argument("--self-test", action="store_true",
-                    help="verifica che il payload sia leggibile ed esce")
+                    help="verifica che il payload sia leggibile e coincida col timbro")
+    ap.add_argument("--version", action="store_true",
+                    help="dice da dove e quando viene questa copia ed esce")
     args = ap.parse_args()
+
+    if args.version:
+        print(f"agent_context_init — {describe_stamp(STAMP)}")
+        return 0
 
     if args.self_test:
         p = load_payload()
         if not p:
             print("payload illeggibile", file=sys.stderr)
             return 1
-        print(f"{len(p)} file, {sum(len(v) for v in p.values())} byte")
+        # Un payload ritoccato a mano dopo l'impacchettamento non e' piu' quello che il
+        # timbro descrive: la copia mentirebbe su cosa installa.
+        if STAMP and STAMP.get("payload_sha") != payload_hash(p):
+            print(f"il payload non coincide col timbro: hash {payload_hash(p)}, timbro "
+                  f"{STAMP.get('payload_sha')}. E' stato modificato dopo --pack.",
+                  file=sys.stderr)
+            return 1
+        print(f"{len(p)} file, {sum(len(v) for v in p.values())} byte, "
+              f"hash {payload_hash(p)}")
         return 0
 
     root = repo_root()
@@ -879,6 +1041,7 @@ def main() -> int:
         return 1
 
     interp = "python" if sys.platform == "win32" else "python3"
+    print(f"Versione   : {describe_stamp(STAMP)}")
     print(f"Repository : {root}")
     print(f"Piattaforma: {sys.platform}  ->  interprete degli hook: {interp}")
     if args.dry_run:
@@ -913,6 +1076,10 @@ def main() -> int:
                       f"config.toml parte vuoto, riportala a mano.")
                 migrated = {}
         w.put(rel, content, seed=rel in SEED_FILES)
+    if STAMP:
+        # Segue la regola dei file gestiti: se i file non vengono aggiornati, nemmeno
+        # la registrazione di quale versione li ha scritti.
+        w.put(VERSION_FILE, json.dumps(STAMP, indent=2, ensure_ascii=False) + "\n")
 
     # In un repo senza ancora un commit non esiste uno sha da scrivere. Meglio
     # nessun marcatore, che il giro dopo il primo commit aggiunge, di un marcatore
@@ -945,7 +1112,8 @@ def main() -> int:
         print(f"  migrazione: {ripulito}")
     print(f"  .gitignore: {ensure_gitignore(root, args.dry_run)}")
 
-    problemi = diagnose(root, interp) if not args.dry_run else []
+    problemi = (diagnose(root, interp) + version_drift(root, payload)
+                if not args.dry_run else [])
     if not args.dry_run:
         if problemi:
             n = len(problemi)
@@ -1954,7 +2122,8 @@ if __name__ == "__main__":
 # # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
 # # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # # i nomi che il lint cerca.
-# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py"}
+# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py",
+#                  "scripts/agent_context_version.json"}
 # # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 # MANAGED_NAMES = {"agent_context_init.py"}
 #
