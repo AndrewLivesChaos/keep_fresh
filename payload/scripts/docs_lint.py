@@ -3,8 +3,7 @@
 """
 docs_lint — controlla che la documentazione per agenti dica ancora il vero.
 
-Questo progetto non ha CI ne' test automatici: e' l'unico controllo automatico che
-esiste, e non guarda il firmware, guarda i documenti che lo descrivono.
+Non guarda il prodotto: guarda i documenti che lo descrivono.
 
 Cinque controlli:
 
@@ -18,139 +17,59 @@ Cinque controlli:
                         lessico conversazionale ([Certo]/[Probabile]/[Ipotesi]) non
                         entra nei documenti. Stampa il cruscotto dei tre livelli.
   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
-  5. FRESCHEZZA       — quanti commit hanno toccato le directory sorgente dopo
-                        il punto in cui status.md dichiara di essere riconciliato.
+  5. FRESCHEZZA       — quanti commit hanno toccato il codice dopo il punto in cui
+                        status.md dichiara di essere riconciliato.
+
+Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
+esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
 
 Uso:   python scripts/docs_lint.py [--quiet]
 Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 """
 
 import io
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
+# Importare context_core non deve lasciare __pycache__ nel repository.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import context_core as core  # noqa: E402
+
 # --------------------------------------------------------------------------- setup
 
-def repo_root() -> Path:
-    try:
-        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, encoding="utf-8")
-        if out.returncode == 0 and out.stdout.strip():
-            return Path(out.stdout.strip())
-    except OSError:
-        pass
-    return Path(__file__).resolve().parent.parent
+ROOT = core.repo_root() or Path(__file__).resolve().parent.parent
+CONTEXT = ROOT / core.CONTEXT_DIR
+CONFIG, CONFIG_ERROR = core.load_config(ROOT)
 
-ROOT = repo_root()
-CONTEXT = ROOT / "docs" / "context"
+EXPECTED_ABSENT = core.config_table(CONFIG, "lint", "expected_absent")
+EXTERNAL_SYMBOLS = core.config_table(CONFIG, "lint", "external_symbols")
+RECEIVED_DOCS = core.config_table(CONFIG, "lint", "received_docs")
 
-# ==== TARATURA DEL PROGETTO (inizio) ====
-# Tutto cio' che sta fra questi due marcatori e' specifico di QUESTO repository.
-# `agent_context_init.py --pack` lo sostituisce con valori neutri prima di
-# trasportarlo altrove, e l'inizializzatore lo riempie rilevandolo dal repo di
-# destinazione. Non spostare i marcatori.
-
-# Percorsi che compongono "il codice": tutto cio' che una rinomina toccherebbe.
-CODE_DIRS = ["src", "drivers", "boards", "sysbuild", "scripts", ".claude"]
-CODE_FILES = ["CMakeLists.txt", "Kconfig", "prj.conf", "sysbuild.conf", "pm_static.yml"]
-CODE_SUFFIXES = {".c", ".h", ".py", ".conf", ".txt", ".yml", ".yaml", ".cmake",
-                 ".dts", ".dtsi", ".overlay", ".json", ".rst", ".defconfig"}
-SKIP_DIRS = {"build", ".git", "__pycache__", "firmware"}
-# Documenti RICEVUTI da terzi. Sono conservati verbatim perche' sono la traccia di cosa
-# e' stato detto e quando: i loro link puntano dentro il workspace di chi li ha scritti e
-# non sono nostri da riparare. Riscriverli falsificherebbe il documento, che e' la stessa
-# ragione per cui gli archivi in docs/superpowers/ non si riscrivono. Restano soggetti a
-# tutti gli altri controlli: qui salta solo la verifica dei link.
-RECEIVED_DOCS = {
-    "documento-ricevuto-1.md",
-    "documento-ricevuto-2.md",
+# Parole che sembrano identificatori ma sono prosa. Qui c'e' solo il nucleo indipendente
+# dal progetto; il resto sta in [lint.not_symbols] della configurazione.
+NOT_SYMBOLS_CORE = {
+    "true", "false", "null", "none", "void", "main", "data", "text", "info",
+    "test", "build", "error", "warning", "debug", "http", "https", "json", "yaml",
+    "toml", "git", "origin", "HEAD", "grep", "python", "node", "docker",
+    "feat", "fix", "docs", "chore", "refactor", "style", "perf",
+    # Parole usate dallo scheletro di status.md: senza, il primo giro del lint
+    # segnala il file che l'inizializzatore ha appena scritto.
+    "esito", "chi", "prova", "corrente", "regola", "dove", "livello", "nota",
+    "head", "cronologia", "stato", "lavoro", "commit",
+    "verificato", "dedotto", "assunto",
 }
-# I file "meta" contengono la lista dei simboli banditi per poterla applicare o
-# trasportare: vanno esclusi dal controllo 1, o si accusano da soli. Restano invece
-# nell'albero per tutti gli altri controlli, altrimenti i simboli che definiscono
-# risulterebbero inesistenti.
-SELF = Path(__file__).resolve()
-# L'inizializzatore puo' stare ovunque — di solito nella radice, dove lo si copia —
-# quindi si cerca per nome invece di dare per scontato che sia in scripts/.
-META_FILES = {SELF} | {p.resolve() for p in ROOT.rglob("agent_context_init.py")
-                       if ".git" not in p.parts}
+# Il confronto avviene sul token gia' abbassato a minuscolo: una voce in maiuscolo non
+# combacerebbe mai, e il difetto resterebbe invisibile. Si normalizza qui, una volta.
+NOT_SYMBOLS = {w.lower() for w in NOT_SYMBOLS_CORE | set(
+    core.config_table(CONFIG, "lint", "not_symbols"))}
 
-# Token citati nei documenti che NON devono esistere nel codice, per costruzione.
-# Ogni voce porta il motivo: senza motivo non si aggiunge niente a questa lista.
-EXPECTED_ABSENT = {
-    "SET_DEVICE_ID":      "id-code 0x14 ritirato: il buco e' voluto",
-    "ENABLE_STREAM":      "ritirato su entrambi i canali",
-    "TEST_ENDED":         "INFO 0x0B ritirato (Task 5, protocollo V2): assorbito in TEST_REPORT",
-    "deviceId":           "campo del vecchio protocollo Cruise Dongle, rimosso",
-    "DEVID":              "idem",
-    "DEVID_IDX":          "idem",
-    "Memory_Flash_":      "feature bandita, elencata negli invarianti",
-    "USB_MASS_STORAGE":   "feature bandita",
-    "CONFIG_BT_SMP":      "disabilitato per scelta: compare come assenza, non come simbolo",
-    "mcumgr":             "feature bandita",
-    "smp_bt":             "feature bandita",
-    "ff.h":               "feature bandita (FatFs)",
-    "fs/fs.h":            "feature bandita (FatFs)",
-    "ad7779":             "feature bandita (EEG)",
-    "Eeg_":               "feature bandita (EEG)",
-    "mt25qu":             "feature bandita (flash esterna)",
-    "qspi":               "feature bandita (flash esterna)",
-    "CONFIG_FILE_SYSTEM": "citato come trappola da NON abilitare",
-    "bq27xxx":            "cartella driver rimossa: il gauge e' gestito in bsm.c",
-    "Modulo_Funzione":    "e' lo schema di naming, non un simbolo",
-    "progetto_origine":        "il progetto di origine, non un simbolo di questo albero",
-    "sense_healt":        "repo di riferimento esterno",
-    "usb_protocol":       "modulo inglobato in usb_connection (4744d3c)",
-}
-
-# Simboli che esistono, ma in Zephyr / NCS, non in questo albero. Sono citati nei
-# documenti perche' spiegano un vincolo esterno. Ogni voce porta il motivo.
-EXTERNAL_SYMBOLS = {
-    "BT_LE_ADV_OPT_CONN":       "opzione Zephyr deprecata, citata per spiegare la migrazione",
-    "BT_LE_ADV_CONN_FAST_2":    "macro Zephyr usata via API, non definita qui",
-    "CONFIG_DISABLE_FLASH_PATCH": "Kconfig Zephyr, citato come raccomandazione CMake",
-    "DISABLE_FLASH_PATCH":      "banner CMake di Zephyr",
-    "Kconfig.zephyr":           "file di Zephyr, incluso dal nostro Kconfig",
-    "flash_img":                "API Zephyr usata dal DFU custom",
-    "usbd_msg_register_cb":     "API Zephyr",
-    "atomic_cas":               "API Zephyr",
-    "SessionStart":             "evento hook di Claude Code",
-    "SessionEnd":               "evento hook di Claude Code",
-    "PreCompact":               "evento hook di Claude Code",
-    "UserPromptSubmit":         "evento hook di Claude Code",
-    "PreToolUse":               "evento hook di Claude Code",
-}
-
-# Parole che sembrano identificatori ma sono prosa, unita' di misura o nomi esterni.
-NOT_SYMBOLS = {
-    "acc", "gyr", "mag", "sfl", "dps", "raw", "byte", "bytes", "true", "false",
-    "null", "void", "atomic", "round", "notify", "write", "connect", "develop",
-    "main", "origin", "head", "git", "west", "python", "nrfutil", "grep",
-    "markdown", "kconfig", "prj", "conf", "hex", "bin", "elf", "swap", "move",
-    "slot0", "slot1", "storage", "flash", "ram", "rom", "noinit", "little",
-    "endian", "watermark", "stream", "test", "owner", "canale", "trasporto",
-    "severita", "warning", "error", "fatal", "info", "exec", "request",
-    "ottotipo", "peripheral", "central", "advertising", "pairing", "beacon",
-    "chore", "docs", "feat", "fix", "refactor", "style", "perf", "build", "text",
-    "verificato", "dedotto", "assunto", "clinico", "sensor", "board",
-    "esito", "data", "chi", "prova", "regola", "dove", "perche",
-    # Progetto sorella: l'interfaccia PC Qt, repo separato in ../progetto_pc.
-    "progetto_pc",
-    # API di sistema Windows citate dalla parte PC: non sono simboli di questo firmware.
-    "QueryPerformanceCounter",
-}
-# ==== TARATURA DEL PROGETTO (fine) ====
-
-# La ricerca in NOT_SYMBOLS confronta il token gia' abbassato a minuscolo: una voce
-# scritta in maiuscolo non combacerebbe mai, e il difetto sarebbe invisibile finche'
-# quella parola non compare in un documento. Si normalizza qui, una volta.
-NOT_SYMBOLS = {w.lower() for w in NOT_SYMBOLS}
+# Directory da non attraversare quando si cerca un file citato per nome.
+SKIP_DIRS = core.NON_SOURCE_DIRS - {"docs", "doc"} | {".git"}
 
 # Fuga esplicita per il caso legittimo: una riga che PARLA della convenzione invece di
 # applicarla. Va scritta in chiaro nel documento, cosi' si vede e si puo' cercare.
@@ -179,31 +98,12 @@ def strip_fences(text: str) -> str:
     return "\n".join(out)
 
 
-def code_files(include_meta=True):
-    for name in CODE_FILES:
-        p = ROOT / name
-        if p.is_file():
-            yield p
-    for d in CODE_DIRS:
-        base = ROOT / d
-        if not base.is_dir():
-            continue
-        for p in base.rglob("*"):
-            if any(part in SKIP_DIRS for part in p.parts):
-                continue
-            if not include_meta and p.resolve() in META_FILES:
-                continue
-            if p.is_file() and p.suffix.lower() in CODE_SUFFIXES:
-                yield p
-
-
 def tracked_files():
     """Solo i file versionati: un documento di appunti non tracciato non fa fallire."""
-    r = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                       encoding="utf-8", cwd=ROOT)
-    if r.returncode != 0:
+    ok, out = core.run_git(ROOT, "ls-files")
+    if not ok:
         return None
-    return {(ROOT / line).resolve() for line in r.stdout.splitlines() if line.strip()}
+    return {(ROOT / line).resolve() for line in out.splitlines() if line.strip()}
 
 
 CODE_BLOB = None
@@ -211,7 +111,7 @@ CODE_BLOB = None
 def code_blob() -> str:
     global CODE_BLOB
     if CODE_BLOB is None:
-        CODE_BLOB = "\n".join(read(p) for p in code_files())
+        CODE_BLOB = "\n".join(read(ROOT / rel) for rel in core.tree_files(ROOT, CONFIG))
     return CODE_BLOB
 
 
@@ -234,6 +134,21 @@ class Report:
     def note(self, msg):
         if not self.quiet:
             print(msg)
+
+
+# ---------------------------------------------------------------- 0. configurazione
+
+def check_config(rep: Report):
+    if CONFIG_ERROR:
+        rep.error("CONFIG", CONFIG_ERROR + " — le eccezioni scritte li' sono ignorate")
+    files = core.code_files(ROOT, CONFIG)
+    _, labels = core.code_scope(ROOT, CONFIG)
+    if labels:
+        shown = ", ".join(labels[:12]) + (" …" if len(labels) > 12 else "")
+        rep.note(f"  codice rilevato: {len(files)} file in {shown}")
+    else:
+        rep.note("  codice rilevato: nessuno, per ora. I controlli sul codice restano "
+                 "inattivi finche' non ce n'e'.")
 
 
 # ------------------------------------------------------------ 1. feature bandite
@@ -261,7 +176,8 @@ def check_banned(rep: Report):
                             "devono tornare, dichiararle li' le rende verificabili")
         return
 
-    para = re.search(r"Nessun riferimento nel codice a:(.*?)(?:\n\s*\n|\n\|)", m.group(1), re.S)
+    para = re.search(r"Nessun riferimento nel codice a:(.*?)(?:\n\s*\n|\n\||\Z)",
+                     m.group(1), re.S)
     if not para:
         rep.error("BANDITE", "il paragrafo 'Nessun riferimento nel codice a:' non ha piu' "
                              "la forma attesa: aggiorna docs_lint.py o il documento")
@@ -272,7 +188,9 @@ def check_banned(rep: Report):
         rep.error("BANDITE", "nessun simbolo bandito estratto dal paragrafo")
         return
 
-    files = list(code_files(include_meta=False))
+    # Il codice del progetto, senza i file di questo impianto: il lint e l'inizializzatore
+    # contengono i nomi banditi per poterli cercare, e si accuserebbero da soli.
+    files = [ROOT / rel for rel in core.code_files(ROOT, CONFIG)]
     hits = 0
     for tok in tokens:
         # Confine a sinistra: senza, `ff.h` trova `poweroff.h`. `*` diventa un glob.
@@ -288,7 +206,12 @@ def check_banned(rep: Report):
 
 # --------------------------------------------------------- 2. identificatori vivi
 
-PATH_RE = re.compile(r"^[\w./\-]+\.(c|h|py|json|conf|md|txt|yml|yaml|rst|dts|overlay|pem)$")
+# Un elenco chiuso di estensioni, non "qualunque cosa dopo un punto": altrimenti
+# `sys.stdout` o `obj.field` diventerebbero percorsi inesistenti.
+PATH_RE = re.compile(
+    r"^[\w./\-]+\.(?:c|h|cc|cpp|hpp|cs|m|mm|swift|kt|java|py|rb|php|go|rs|js|jsx|ts|tsx"
+    r"|vue|svelte|sh|ps1|sql|html|css|scss|json|toml|yml|yaml|ini|cfg|conf|xml|md|rst"
+    r"|txt|cmake|dts|dtsi|overlay|pem|lock|env|gradle|csproj|sln)$")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{3,}$")
 
 
@@ -297,15 +220,15 @@ def path_exists_anywhere(rel: str) -> bool:
     Un documento puo' citare un file per nome senza il percorso completo: `foo.md`
     che sta in docs/, mentre chi lo cita e' in docs/context/. Cercarlo solo dalla
     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
-    sono il modo in cui un lint smette di essere letto. Regge anche i glob (`epd47/*.h`).
+    sono il modo in cui un lint smette di essere letto. Regge anche i glob (`lib/*.h`).
     """
     if (ROOT / rel).exists():
         return True
     try:
         for hit in ROOT.glob("**/" + rel):
-            if not any(part in SKIP_DIRS for part in hit.parts):
+            if not any(part in SKIP_DIRS for part in hit.relative_to(ROOT).parts):
                 return True
-    except (ValueError, OSError, IndexError):
+    except (ValueError, OSError, IndexError, NotImplementedError):
         pass
     return False
 
@@ -314,11 +237,11 @@ def _is_prose(tok: str) -> bool:
     """Frammenti di comando, formule e frasi fra backtick non sono identificatori."""
     if " " in tok or "=" in tok or "(" in tok or "×" in tok or "@" in tok:
         return True
-    # Segnaposto in un template: topic MQTT, rotta HTTP, nome di file parametrico.
+    # Segnaposto in un template: topic, rotta HTTP, nome di file parametrico.
     # `epic/{mac}/data` non e' un percorso che debba esistere sul disco.
     if "{" in tok or "}" in tok or "<" in tok or ">" in tok:
         return True
-    # Unita' di misura: due segmenti, il secondo cortissimo e alfabetico — `umm/s`,
+    # Unita' di misura: due segmenti, il secondo cortissimo e alfabetico — `m/s`,
     # `km/h`, `entry/s`. La soglia stretta sul secondo segmento evita di scambiare
     # per unita' una cartella vera come `epic/data`.
     seg = tok.split("/")
@@ -328,11 +251,17 @@ def _is_prose(tok: str) -> bool:
         return True
     if tok.startswith("build/"):
         return True
-    # `Imu_Acq_TryClaim/Release/Current`: scorciatoia di prosa, non un percorso.
+    # `Acq_TryClaim/Release/Current`: scorciatoia di prosa, non un percorso.
     if "/" in tok and not PATH_RE.match(tok):
         if any(seg[:1].isupper() for seg in tok.split("/") if seg):
             return True
     return False
+
+
+def _is_external(tok: str, base: str) -> bool:
+    if base in EXTERNAL_SYMBOLS:
+        return True
+    return any(k.endswith("/") and tok.startswith(k) for k in EXTERNAL_SYMBOLS)
 
 
 def check_identifiers(rep: Report):
@@ -347,9 +276,9 @@ def check_identifiers(rep: Report):
         base = tok.rstrip("*/")
         names = ", ".join(sorted(p.name for p in where))
 
-        if (_is_prose(tok) or GITREF_RE.match(tok) or tok.startswith("zephyr/")
+        if (_is_prose(tok) or GITREF_RE.match(tok)
                 or tok.lower() in NOT_SYMBOLS or base.lower() in NOT_SYMBOLS
-                or base in EXTERNAL_SYMBOLS
+                or _is_external(tok, base)
                 or any(k.rstrip("*") in tok for k in EXPECTED_ABSENT)):
             skipped += 1
             continue
@@ -367,9 +296,8 @@ def check_identifiers(rep: Report):
         if IDENT_RE.match(tok):
             checked += 1
             # Sottostringa, non parola intera: i documenti citano di proposito la coda
-            # di un enum lungo (`INFO_ID_STREAM` per
-            # USB_CONNECTION_PACKET_INFO_ID_STREAM). E' la regola dell'altitudine:
-            # il documento non ripete il prefisso, il controllo lo tollera.
+            # di un nome lungo (`INFO_ID_STREAM` per PACKET_INFO_ID_STREAM). E' la
+            # regola dell'altitudine: il documento non ripete il prefisso.
             if base in code_blob():
                 continue
             missing += 1
@@ -383,7 +311,7 @@ def check_identifiers(rep: Report):
 
 # ------------------------------------------------------------- 3. livelli evidenza
 
-LEVELS = ("verificato", "dedotto", "assunto")
+LEVELS = core.EVIDENCE_LEVELS
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 CONV_RE = re.compile(r"\[(Certo|Probabile|Ipotesi)\]")
 
@@ -437,7 +365,7 @@ LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 def check_links(rep: Report):
     anchors = {}
     for p in ROOT.rglob("*.md"):
-        if any(part in SKIP_DIRS for part in p.parts):
+        if any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts):
             continue
         text = strip_fences(read(p))
         found = set()
@@ -449,7 +377,9 @@ def check_links(rep: Report):
             found.add(m.group(1))
         anchors[p.resolve()] = found
 
-    targets = [ROOT / "AGENTS.md", ROOT / "CLAUDE.md"]
+    # I file di ingresso degli agenti stanno nella radice e contengono quasi tutti i
+    # link: si prendono tutti i .md della radice, non un elenco di nomi da aggiornare.
+    targets = sorted(ROOT.glob("*.md"))
     targets += context_files() + sorted((ROOT / "docs").glob("*.md"))
     tracked = tracked_files()
 
@@ -461,7 +391,7 @@ def check_links(rep: Report):
         if tracked is not None and p.resolve() not in tracked and p not in context_files():
             skipped_untracked += 1
             continue
-        # Un documento ricevuto non e' nostro da riparare: vedi RECEIVED_DOCS.
+        # Un documento ricevuto non e' nostro da riparare: vedi [lint.received_docs].
         if p.name in RECEIVED_DOCS:
             skipped_received += 1
             continue
@@ -495,40 +425,46 @@ def check_links(rep: Report):
 
 # ------------------------------------------------------------------ 5. freschezza
 
-MARKER_RE = re.compile(r"<!--\s*context-verified-at:\s*([0-9a-f]{7,40})\s*-->")
-
-
 def check_freshness(rep: Report):
     status = CONTEXT / "status.md"
     text = read(status)
     if not text:
-        rep.error("FRESCHEZZA", "docs/context/status.md non leggibile")
+        rep.error("FRESCHEZZA", "docs/context/status.md non esiste o non e' leggibile")
         return
-    m = MARKER_RE.search(text)
-    if not m:
+    sha = core.read_marker(text)
+    if not sha:
+        if core.head_sha(ROOT) is None:
+            # Nessun commit ancora: non c'e' uno sha a cui ancorarsi, ed e' normale.
+            rep.warn("FRESCHEZZA", "il repository non ha ancora un commit: la freschezza "
+                                   "si misura dal primo. Dopo il commit rilancia "
+                                   "agent_context_init.py, che aggiunge il marcatore")
+            return
         rep.error("FRESCHEZZA",
                   "status.md non ha il marcatore <!-- context-verified-at: <sha> -->: "
                   "senza, la freschezza non e' misurabile")
         return
-    sha = m.group(1)
-    r = subprocess.run(["git", "log", "--oneline", f"{sha}..HEAD", "--", "src", "drivers"],
-                       capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
-    if r.returncode != 0:
+    specs, labels = core.code_scope(ROOT, CONFIG)
+    if not specs:
+        rep.note(f"  status.md riconciliato a {sha}; nessun codice da sorvegliare, per ora")
+        return
+    ok, lines = core.commits_since(ROOT, sha, specs)
+    if not ok:
         rep.warn("FRESCHEZZA", f"commit {sha} non trovato: il marcatore punta al vuoto")
         return
-    lines = [l for l in r.stdout.splitlines() if l.strip()]
+    where = ", ".join(labels[:8]) + (" …" if len(labels) > 8 else "")
     if lines:
         rep.warn("FRESCHEZZA",
-                 f"{len(lines)} commit hanno toccato src/ o drivers/ dopo {sha}, "
+                 f"{len(lines)} commit hanno toccato il codice ({where}) dopo {sha}, "
                  f"a cui status.md dichiara di essere riconciliato:\n      " +
                  "\n      ".join(lines[:8]))
     else:
-        rep.note(f"  status.md riconciliato a {sha}: nessun commit su src/ da allora")
+        rep.note(f"  status.md riconciliato a {sha}: nessun commit sul codice da allora")
 
 
 # ------------------------------------------------------------------------- main
 
 CHECKS = [
+    ("0. CONFIGURAZIONE  — cosa viene considerato codice", check_config),
     ("1. FEATURE BANDITE — simboli che non devono tornare", check_banned),
     ("2. IDENTIFICATORI  — cio' che i doc citano esiste ancora", check_identifiers),
     ("3. EVIDENZA        — verificato/dedotto/assunto", check_evidence),

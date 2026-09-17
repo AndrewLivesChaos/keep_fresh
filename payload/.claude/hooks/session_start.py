@@ -17,25 +17,32 @@ FAIL-OPEN: qualunque errore esce 0 e non stampa. Un hook rotto deve degradare ad
 
 import sys
 
-from hooklib import (
-    CODE_PATHS, STATUS_FILE, count_levels, dirty, extract_marked,
-    log, read_marker, repo_root, run_git, setup_stdout,
-)
+# Importare hooklib non deve lasciare __pycache__ nel repository.
+sys.dont_write_bytecode = True
+
+from hooklib import core, log, setup_stdout
 
 setup_stdout()
 
 
 def main() -> int:
-    root = repo_root()
+    if core is None:
+        log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
+        return 0
+    root = core.repo_root()
     if root is None:
         return 0
 
+    STATUS_FILE = core.STATUS_FILE
     status_path = root / STATUS_FILE
     if not status_path.is_file():
         log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
         return 0
 
     status = status_path.read_text(encoding="utf-8", errors="replace")
+    cfg, _ = core.load_config(root)
+    specs, labels = core.code_scope(root, cfg)
+    where = ", ".join(labels)
 
     out = [
         "=== Stato del progetto (iniettato da .claude/hooks/session_start.py) ===",
@@ -44,7 +51,7 @@ def main() -> int:
     ]
 
     # --- Le sezioni che il documento stesso dichiara volatili ---
-    blocks = extract_marked(status)
+    blocks = core.extract_marked(status)
     if blocks:
         out.append("\n\n".join(blocks))
         out.append("")
@@ -54,29 +61,27 @@ def main() -> int:
         out.append("")
 
     # --- Cruscotto dei livelli di evidenza ---
-    levels = count_levels(root)
+    levels = core.count_levels(root)
     out.append("Evidenza nei documenti di contesto: " +
                "  ".join(f"{k}={v}" for k, v in levels.items()))
 
     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
-    sha = read_marker(status)
+    sha = core.read_marker(status)
     if sha:
-        since = run_git(root, "log", "--oneline", f"{sha}..HEAD", "--", *CODE_PATHS)
-        if since:
-            n = len(since.splitlines())
-            out.append(f"ATTENZIONE: {n} commit hanno toccato {'/, '.join(CODE_PATHS)}/ "
+        ok, since = core.commits_since(root, sha, specs)
+        if ok and since:
+            out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
                        f"riconciliato. Potrebbe dire cose non piu' vere.")
-    else:
+    elif core.head_sha(root) is not None:
         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
                    f"la sua freschezza non e' misurabile.")
 
     # --- Lavoro non registrato rimasto da una sessione precedente ---
-    if dirty(root, CODE_PATHS) and not dirty(root, [STATUS_FILE]):
-        out.append(f"ATTENZIONE: ci sono modifiche non committate sotto "
-                   f"{'/, '.join(CODE_PATHS)}/ e {STATUS_FILE} e' intatto. Probabile "
-                   f"lavoro di una sessione precedente mai registrato: valuta se va "
-                   f"annotato.")
+    if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
+        out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
+                   f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
+                   f"precedente mai registrato: valuta se va annotato.")
 
     out += ["", "Verifica che i documenti dicano ancora il vero: "
                 "python scripts/docs_lint.py",

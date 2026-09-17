@@ -1,54 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hooklib — la parte comune dei due hook. Python, non shell, perche' deve girare
-uguale su Windows e su macOS: una sola implementazione, nessuna copia da tenere
-allineata.
+hooklib — la parte comune agli hook di Claude Code. Python, non shell, perche' deve
+girare uguale su ogni sistema operativo.
 
-=============================================================================
-Costanti del progetto. Su un repo nuovo le scrive `agent_context_init.py`
-rilevandole da `git ls-files`: vanno guardate, e corrette solo se ha sbagliato.
-=============================================================================
+Qui non c'e' niente di specifico del progetto. Dove sta il codice lo rileva
+scripts/context_core.py a ogni esecuzione, lo stesso modulo che usa il lint: hook e
+lint rispondono sempre allo stesso modo alla domanda "e' cambiato il codice?".
+
+Se context_core non si trova, `core` resta None e gli hook tacciono: sono fail-open.
 """
 
-# ==== TARATURA DEL PROGETTO (inizio) ====
-# Tutto cio' che sta fra questi due marcatori e' specifico di QUESTO repository.
-# `agent_context_init.py --pack` lo sostituisce con valori neutri, e
-# l'inizializzatore lo riempie rilevandolo dal repo di destinazione.
-
-# Le directory il cui cambiamento richiede che lo stato del lavoro venga aggiornato.
-CODE_PATHS = ["src", "drivers"]
-
-# Il documento che tiene lo stato corrente del lavoro.
-STATUS_FILE = "docs/context/status.md"
-
-# La directory dei documenti di contesto, per il cruscotto dei livelli di evidenza.
-CONTEXT_DIR = "docs/context"
-
-# I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
-EVIDENCE_LEVELS = ["verificato", "dedotto", "assunto"]
-# ==== TARATURA DEL PROGETTO (fine) ====
-
-# =============================================================================
-# Da qui in giu' non c'e' niente di specifico del progetto.
-# =============================================================================
-
 import io
-import os
-import re
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-
-MARKER_RE = re.compile(r"<!--\s*context-verified-at:\s*([0-9a-f]{7,40})\s*-->")
-# I marcatori devono stare DA SOLI sulla loro riga: senza le ancore di riga, la
-# regex cattura anche il paragrafo che spiega i marcatori citandoli in linea.
-BLOCK_RE = re.compile(
-    r"^[ \t]*<!--\s*session-start:\s*begin\s*-->[ \t]*$"
-    r"(.*?)"
-    r"^[ \t]*<!--\s*session-start:\s*end\s*-->[ \t]*$",
-    re.S | re.M)
+import subprocess
 
 
 def setup_stdout() -> None:
@@ -61,16 +28,7 @@ def setup_stdout() -> None:
         pass
 
 
-def run_git(root, *args) -> str:
-    try:
-        r = subprocess.run(["git", *args], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", cwd=str(root))
-        return r.stdout if r.returncode == 0 else ""
-    except OSError:
-        return ""
-
-
-def repo_root():
+def _root_via_git():
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                            capture_output=True, text=True, encoding="utf-8",
@@ -82,12 +40,21 @@ def repo_root():
     return None
 
 
-def git_dir(root):
-    out = run_git(root, "rev-parse", "--git-dir").strip()
-    if not out:
+def _load_core():
+    root = _root_via_git()
+    if root is None:
         return None
-    p = Path(out)
-    return p if p.is_absolute() else (root / p)
+    # Importare context_core non deve lasciare __pycache__ nel repository.
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(root / "scripts"))
+    try:
+        import context_core
+        return context_core
+    except Exception:
+        return None
+
+
+core = _load_core()
 
 
 def log(event: str, outcome: str) -> None:
@@ -98,49 +65,14 @@ def log(event: str, outcome: str) -> None:
     sono indistinguibili. Si scrivono anche gli esiti silenziosi, per lo stesso motivo.
     """
     try:
-        root = repo_root()
+        root = _root_via_git()
         if root is None:
             return
-        g = git_dir(root)
-        if g is None:
+        g = core.git_dir(root) if core else root / ".git"
+        if g is None or not g.is_dir():
             return
         line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {event:<13} {outcome}\n"
         with open(g / "claude-hooks.log", "a", encoding="utf-8") as fh:
             fh.write(line)
     except Exception:
         pass
-
-
-def read_marker(status_text: str):
-    m = MARKER_RE.search(status_text)
-    return m.group(1) if m else None
-
-
-def extract_marked(status_text: str):
-    """
-    Le sezioni da iniettare le dichiara il documento, con
-    <!-- session-start: begin --> ... <!-- session-start: end -->.
-    Cosi' l'hook non sa niente della numerazione delle sezioni, che cambia da progetto
-    a progetto e drifta dentro lo stesso progetto.
-    """
-    return [m.group(1).strip() for m in BLOCK_RE.finditer(status_text) if m.group(1).strip()]
-
-
-def count_levels(root) -> dict:
-    counts = {lvl: 0 for lvl in EVIDENCE_LEVELS}
-    ctx = root / CONTEXT_DIR
-    if not ctx.is_dir():
-        return counts
-    for p in sorted(ctx.glob("*.md")):
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for lvl in EVIDENCE_LEVELS:
-            counts[lvl] += len(re.findall(r"\*\*" + re.escape(lvl) + r"\*\*", text))
-    return counts
-
-
-def dirty(root, paths) -> str:
-    """Modifiche non committate sotto i percorsi dati (stringa vuota = pulito)."""
-    return run_git(root, "status", "--porcelain", "--", *paths).strip()

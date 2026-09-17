@@ -1,0 +1,45 @@
+# Configurazione del contesto per agenti.
+#
+# Questo file e' TUO. L'inizializzatore lo crea se manca e non lo sovrascrive mai,
+# nemmeno con --force: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
+# script non deve cancellarla.
+#
+# Dove sta il codice NON si scrive qui. Il lint e gli hook lo rilevano a ogni
+# esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
+# documenti e binari, le directory di build e dipendenze, le directory che iniziano con
+# un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
+#     python scripts/docs_lint.py
+# Qui si correggono solo gli errori di quella rilevazione.
+
+[code]
+# Percorsi, relativi alla radice, da considerare codice anche se la rilevazione li
+# scarta: una directory che inizia con un punto, file senza estensione riconosciuta.
+include = []
+# Percorsi da NON considerare codice anche se la rilevazione li prende: codice
+# generato, copie di librerie esterne.
+exclude = []
+
+# Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
+# falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
+# motivo non si aggiunge niente, o in sei mesi queste liste sono una discarica che
+# silenzia anche i controlli veri.
+
+[lint.not_symbols]
+# Parole fra backtick nei documenti che sembrano identificatori ma sono prosa, unita' di
+# misura o nomi esterni. Il confronto ignora maiuscole e minuscole.
+# "parola" = "perche' non e' un simbolo"
+
+[lint.expected_absent]
+# Nomi citati nei documenti che NON devono esistere nel codice, per costruzione: un
+# identificatore ritirato, un modulo rimosso, il nome di un altro repository.
+# "NOME_RITIRATO" = "perche' non deve esistere"
+
+[lint.external_symbols]
+# Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
+# Una chiave che finisce con "/" vale come prefisso di percorso.
+# "API_DELLA_LIBRERIA" = "di quale libreria, e perche' e' citata"
+
+[lint.received_docs]
+# Documenti ricevuti da terzi e conservati verbatim: il lint non ne controlla i link,
+# che puntano nel workspace di chi li ha scritti. Si indicano per nome di file.
+# "nome-file.md" = "da chi, e perche' e' conservato cosi'"

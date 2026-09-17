@@ -5,41 +5,47 @@ agent_context_init — prepara in un repo la struttura di contesto/memoria per a
 
 Che cosa fa e che cosa NON fa
 -----------------------------
-FA la meccanica: crea le cartelle, scrive il lint dei documenti, gli hook e la loro
-configurazione con l'interprete giusto per la piattaforma, aggiorna .gitignore, semina
-uno scheletro di status.md e stampa il prompt da dare all'agente.
+FA la meccanica: scrive il lint dei documenti, gli hook e la loro configurazione con
+l'interprete giusto per la piattaforma, aggiorna .gitignore, semina uno scheletro di
+status.md e una configurazione vuota, e stampa il prompt da dare all'agente.
 
 NON crea il contesto. I documenti nascono solo leggendo il repo e chiedendo all'utente
 le cose che nel repo non ci sono: stato del lavoro, decisioni prese fuori dal codice,
 verifiche fatte a mano. Quello e' il lavoro dell'agente, e questo script gli prepara il
 terreno.
 
+Funziona in qualunque repository git, anche vuoto: dove sta il codice non viene scritto
+da nessuna parte, lo rilevano il lint e gli hook a ogni esecuzione. Un progetto che nasce
+vuoto e cresce, o che si riorganizza, non richiede di rilanciare niente.
+
 Uso
 ---
     python agent_context_init.py                 # dentro il repo da inizializzare
     python agent_context_init.py --dry-run       # dice cosa farebbe, non tocca niente
-    python agent_context_init.py --force         # sovrascrive i file gia' presenti
-    python agent_context_init.py --pack          # rigenera il payload dal repo corrente
+    python agent_context_init.py --force         # aggiorna lint, hook e guida
+    python agent_context_init.py --pack          # nel repo sorgente: rigenera il payload
 
-Funziona su Windows e macOS/Linux: un unico file Python, nessuna dipendenza. L'unica
-differenza fra piattaforme e' il nome dell'interprete degli hook ("python" su Windows,
-"python3" altrove), e per questo gli hook si dichiarano in .claude/settings.local.json,
-che git non traccia: ogni macchina tiene il suo. Il rovescio e' che un clone appena
+Un unico file Python, nessuna dipendenza. Gli hook si dichiarano in
+.claude/settings.local.json, che git non traccia: il comando contiene il nome
+dell'interprete, che e' un fatto della macchina. Il rovescio e' che un clone appena
 fatto non ha hook finche' non ci si lancia dentro questo script una volta.
 
-Il payload sta in fondo a questo file, in chiaro. `--pack`, eseguito in un progetto di
-riferimento, lo rigenera dai file veri: e' cosi' che si evita la copia che diverge.
+Il payload sta in fondo a questo file, in chiaro. `--pack`, eseguito nel repository
+sorgente dello strumento, lo rigenera dai file veri in payload/.
 Il sentinella compare DUE volte nel sorgente (nella riga che lo definisce, e in fondo):
 si taglia sempre sull'ULTIMA, o lo script si tronca da solo. E' successo davvero.
 """
 
 import argparse
+import ast
 import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tomllib
+import types
 from datetime import date
 from pathlib import Path
 
@@ -51,119 +57,16 @@ SENTINEL = "# ==== PAYLOAD (rigenerabile con --pack, non modificare a mano) ====
 FILE_HDR = "# ---- AGENT-CONTEXT-FILE: "
 FILE_END = " ----"
 
-# I file veri da cui --pack rigenera il payload, nel progetto di riferimento.
-PACK_FILES = [
-    "scripts/docs_lint.py",
-    ".claude/hooks/hooklib.py",
-    ".claude/hooks/session_start.py",
-    ".claude/hooks/stop_check.py",
-    "docs/agent_docs_guide.md",
-]
+# Nel repository sorgente dello strumento, i file veri del payload stanno qui, con gli
+# stessi percorsi che avranno nel repository di destinazione.
+PAYLOAD_DIR = "payload"
+
+STATUS_FILE = "docs/context/status.md"
+CONFIG_FILE = "docs/context/config.toml"
+# I file SEME: scritti solo se mancano, mai sovrascritti, nemmeno con --force.
+SEED_FILES = {CONFIG_FILE}
 
 GITIGNORE_LINES = [".claude/settings.local.json"]
-
-# --------------------------------------------------------------- taratura neutra
-#
-# I file del payload arrivano dal progetto di riferimento, quindi porterebbero le sue
-# costanti: estensioni di quel linguaggio, divieti di quel dominio, lessico di quella
-# lingua. Su un altro repo sono sbagliate per costruzione, e lasciarle scaricando la
-# ritaratura sull'agente fa sembrare portabile una cosa che non lo e'.
-#
-# Percio' --pack sostituisce il blocco delimitato con questi valori neutri, e
-# l'inizializzatore ne riempie la parte RILEVABILE guardando il repo di destinazione.
-# Cio' che non e' rilevabile — divieti e lessico — parte vuoto, per costruzione.
-
-TUNING_BEGIN = "# ==== TARATURA DEL PROGETTO (inizio) ===="
-TUNING_END = "# ==== TARATURA DEL PROGETTO (fine) ===="
-
-# Estensioni sorgente di uso comune, indipendenti dal linguaggio. Servono solo come
-# rete di sicurezza: l'inizializzatore le sostituisce con quelle davvero presenti.
-DEFAULT_SUFFIXES = sorted({
-    ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".m", ".mm", ".swift", ".kt", ".java",
-    ".py", ".rb", ".php", ".go", ".rs", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
-    ".sh", ".ps1", ".sql", ".html", ".css", ".scss",
-    ".json", ".yml", ".yaml", ".toml", ".ini", ".conf", ".cfg", ".txt", ".cmake",
-})
-
-# Estensioni che non sono codice: non entrano nella rilevazione.
-NON_SOURCE_SUFFIXES = {
-    ".md", ".rst", ".adoc", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    ".webp", ".bmp", ".tiff", ".mp3", ".mp4", ".wav", ".zip", ".gz", ".tar", ".7z",
-    ".bin", ".hex", ".elf", ".exe", ".dll", ".so", ".dylib", ".lock", ".log", ".csv",
-    ".pem", ".der", ".crt", ".key",
-    # Font e binari incorporati: sono asset, non sorgenti.
-    ".ttf", ".otf", ".woff", ".woff2", ".eot", ".wasm", ".jar", ".class",
-    ".o", ".a", ".obj", ".lib", ".pyc", ".pyo", ".db", ".sqlite", ".sqlite3",
-}
-
-# Directory che non contengono codice del progetto, per quanto pieni di file.
-NON_SOURCE_DIRS = {
-    "docs", "doc", "build", "dist", "out", "target", "node_modules", "vendor",
-    "third_party", "external", ".git", ".github", ".vscode", ".idea", "__pycache__",
-    "venv", ".venv", "firmware", "site-packages",
-}
-
-NEUTRAL_LINT_TUNING = '''# Percorsi che compongono "il codice": tutto cio' che una rinomina toccherebbe.
-# RILEVATI dall'inizializzatore guardando questo repo. Correggili se ha sbagliato.
-CODE_DIRS = {code_dirs}
-CODE_FILES = {code_files}
-CODE_SUFFIXES = {code_suffixes}
-SKIP_DIRS = {skip_dirs}
-# I file "meta" contengono la lista dei simboli banditi per poterla applicare o
-# trasportare: vanno esclusi dal controllo 1, o si accusano da soli. Restano invece
-# nell'albero per tutti gli altri controlli, altrimenti i simboli che definiscono
-# risulterebbero inesistenti.
-SELF = Path(__file__).resolve()
-# L'inizializzatore puo' stare ovunque — di solito nella radice, dove lo si copia —
-# quindi si cerca per nome invece di dare per scontato che sia in scripts/.
-META_FILES = {{SELF}} | {{p.resolve() for p in ROOT.rglob("agent_context_init.py")
-                       if ".git" not in p.parts}}
-
-# Token citati nei documenti che NON devono esistere nel codice, per costruzione:
-# un identificatore ritirato, un modulo rimosso, il nome di un altro repository.
-# VUOTO DI PROPOSITO: si riempie guardando i falsi positivi del primo giro.
-# Ogni voce porta il motivo, e senza motivo non si aggiunge niente — o in sei mesi
-# questa e' una discarica che silenzia anche i controlli veri.
-EXPECTED_ABSENT = {{
-    # "NOME_RITIRATO": "perche' non deve esistere",
-}}
-
-# Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
-# Sono citati nei documenti perche' spiegano un vincolo esterno. VUOTO DI PROPOSITO.
-EXTERNAL_SYMBOLS = {{
-    # "API_DELLA_LIBRERIA": "di quale libreria, e perche' e' citata",
-}}
-
-# Parole che sembrano identificatori ma sono prosa, unita' di misura o nomi esterni.
-# Qui c'e' solo il nucleo indipendente dalla lingua e dal dominio: il resto va
-# aggiunto guardando i falsi positivi del primo giro, ed e' specifico della lingua
-# in cui sono scritti i documenti.
-NOT_SYMBOLS = {{
-    "true", "false", "null", "none", "void", "main", "data", "text", "info",
-    "test", "build", "error", "warning", "debug", "http", "https", "json", "yaml",
-    "git", "origin", "HEAD", "grep", "python", "node", "docker",
-    "feat", "fix", "docs", "chore", "refactor", "style", "perf",
-    # Parole usate dallo scheletro di status.md: senza, il primo giro del lint
-    # segnala il file che l'inizializzatore ha appena scritto.
-    "esito", "chi", "prova", "corrente", "regola", "dove", "livello", "nota",
-    "head", "cronologia", "stato", "lavoro", "commit",
-    "verificato", "dedotto", "assunto",
-}}
-'''
-
-NEUTRAL_HOOK_TUNING = '''# Le directory il cui cambiamento richiede che lo stato del lavoro venga aggiornato.
-# RILEVATE dall'inizializzatore guardando questo repo. Correggile se ha sbagliato.
-CODE_PATHS = {code_paths}
-
-# Il documento che tiene lo stato corrente del lavoro.
-STATUS_FILE = "docs/context/status.md"
-
-# La directory dei documenti di contesto, per il cruscotto dei livelli di evidenza.
-CONTEXT_DIR = "docs/context"
-
-# I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
-EVIDENCE_LEVELS = ["verificato", "dedotto", "assunto"]
-'''
 
 STATUS_SKELETON = """# Stato del lavoro
 {marker}
@@ -239,10 +142,10 @@ Sono istruzioni operative, non la descrizione di un altro progetto.
 Prima di scrivere, chiedimi quello che non e' deducibile dal repo: stato del lavoro,
 decisioni prese fuori dal codice, verifiche fatte a mano.
 
-In scripts/ e .claude/ trovi gia' il lint e gli hook, e NON vanno riscritti. Le costanti
-che dicono dove sta il codice sono gia' state rilevate e scritte: toccale solo se sono
-sbagliate. Restano vuote di proposito NOT_SYMBOLS, EXPECTED_ABSENT ed EXTERNAL_SYMBOLS:
-riempile guardando i falsi positivi del primo giro, con il motivo scritto per ogni voce.
+In scripts/ e .claude/ trovi gia' il lint e gli hook, e NON vanno riscritti. Dove sta il
+codice lo rilevano da soli a ogni esecuzione. La taratura a mano sta in
+docs/context/config.toml: le liste di eccezioni del lint partono vuote di proposito, e si
+riempiono guardando i falsi positivi del primo giro, con il motivo scritto per ogni voce.
 
 Fai girare `python scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
 concluso. Al primo giro sara' rumoroso: correggi prima i CONTROLLI, poi i documenti. Una
@@ -286,97 +189,39 @@ def load_payload() -> dict:
     return files
 
 
-def replace_tuning(text: str, neutral: str):
-    """Sostituisce il blocco di taratura con quello dato. Ritorna (testo, fatto?)."""
-    i = text.find(TUNING_BEGIN)
-    j = text.find(TUNING_END)
-    if i < 0 or j < 0 or j < i:
-        return text, False
-    head = text[:i + len(TUNING_BEGIN)]
-    return head + "\n" + neutral + text[j:], True
-
-
-def detect_project(root: Path) -> dict:
+def payload_core(payload: dict):
     """
-    Guarda il repo di destinazione e deduce dove sta il codice e che forma ha.
-
-    Serve perche' le costanti del progetto di riferimento sono sbagliate ovunque
-    altro: `.dts` non significa niente in un progetto TypeScript. Si parte dai file
-    TRACCIATI, non dal filesystem: build, cache e dipendenze non sono codice, e git
-    sa gia' distinguerli.
+    Il context_core del payload, caricato in memoria. L'inizializzatore mostra cosa
+    viene rilevato come codice usando lo STESSO modulo che useranno lint e hook: una
+    seconda implementazione qui divergerebbe.
     """
-    r = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", cwd=str(root))
-    files = [Path(l) for l in r.stdout.splitlines() if l.strip()] if r.returncode == 0 else []
-
-    def ignored_dir(name: str) -> bool:
-        # Le directory che iniziano con un punto sono configurazione di strumenti, non
-        # codice del progetto: .serena, .vscode, .devcontainer, .husky... Elencarle a
-        # una a una e' una rincorsa persa, perche' ogni tool nuovo ne porta una. L'unica
-        # eccezione e' .claude, che qui contiene gli hook e va davvero controllata.
-        return name in NON_SOURCE_DIRS or (name.startswith(".") and name != ".claude")
-
-    suffixes, dirs, root_files = {}, {}, []
-    for f in files:
-        if any(ignored_dir(part) for part in f.parts[:-1]):
-            continue
-        suf = f.suffix.lower()
-        if not suf or suf in NON_SOURCE_SUFFIXES:
-            continue
-        suffixes[suf] = suffixes.get(suf, 0) + 1
-        if len(f.parts) == 1:
-            root_files.append(f.name)
-        else:
-            top = f.parts[0]
-            if not ignored_dir(top):
-                dirs[top] = dirs.get(top, 0) + 1
-
-    # Estensioni marginali (uno o due file) sono spesso configurazione sparsa: si
-    # tengono comunque, perche' escluderle creerebbe falsi positivi nel controllo 2.
-    keep_suf = sorted(suffixes) or sorted(DEFAULT_SUFFIXES)
-    # Le directory sorgente, dalla piu' popolosa: chi ha un solo file di solito e'
-    # un accessorio, ma tenerlo costa poco e perderlo costa un falso positivo.
-    keep_dirs = [d for d, _ in sorted(dirs.items(), key=lambda kv: -kv[1])]
-    # Il ripiego va deciso PRIMA di aggiungere .claude: altrimenti in un repo vuoto
-    # l'unica directory sorgente risulta .claude, e il lint guarda solo se' stesso.
-    if not keep_dirs:
-        keep_dirs = ["src"]
-    if ".claude" not in keep_dirs:
-        keep_dirs.append(".claude")
-
-    return {
-        "code_dirs": keep_dirs,
-        "code_files": sorted(set(root_files)),
-        "code_suffixes": keep_suf,
-        # Cio' che il hook Stop sorveglia: le sorgenti vere, non gli script di supporto.
-        "code_paths": [d for d in keep_dirs if d not in (".claude", "scripts")] or ["src"],
-    }
+    src = payload.get("scripts/context_core.py")
+    if not src:
+        return None
+    mod = types.ModuleType("context_core")
+    exec(compile(src, "context_core.py", "exec"), mod.__dict__)
+    return mod
 
 
 def pack(root: Path) -> int:
-    """Rigenera il payload dai file veri del progetto di riferimento."""
+    """Rigenera il payload dai file veri in payload/."""
+    base = root / PAYLOAD_DIR
+    if not base.is_dir():
+        print(f"  {PAYLOAD_DIR}/ non esiste in {root}: --pack si lancia nel repository "
+              f"sorgente dello strumento", file=sys.stderr)
+        return 1
+    files = sorted(p for p in base.rglob("*")
+                   if p.is_file() and "__pycache__" not in p.parts
+                   and p.suffix not in (".pyc", ".pyo"))
+    if not files:
+        print(f"  {PAYLOAD_DIR}/ e' vuota: niente da impacchettare", file=sys.stderr)
+        return 1
+
     blocks = []
-    neutrals = {
-        "scripts/docs_lint.py": NEUTRAL_LINT_TUNING.format(
-            code_dirs='["src"]', code_files="[]",
-            code_suffixes="{" + ", ".join(f'"{s}"' for s in DEFAULT_SUFFIXES) + "}",
-            skip_dirs='{"build", ".git", "__pycache__", "node_modules", "dist"}'),
-        ".claude/hooks/hooklib.py": NEUTRAL_HOOK_TUNING.format(code_paths='["src"]'),
-    }
-    for rel in PACK_FILES:
-        p = root / rel
-        if not p.is_file():
-            print(f"  MANCA  {rel} — payload non rigenerato")
-            return 1
-        text = p.read_text(encoding="utf-8")
-        if rel in neutrals:
-            text, done = replace_tuning(text, neutrals[rel])
-            if not done:
-                print(f"  {rel} non ha i marcatori di taratura: la sua taratura di "
-                      f"progetto finirebbe nel payload. Aggiungili e rilancia.")
-                return 1
-            print(f"  neutralizzata la taratura in  {rel}")
-        if FILE_HDR in text:
+    for p in files:
+        rel = p.relative_to(base).as_posix()
+        text = p.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if FILE_HDR in text or SENTINEL in text:
             print(f"  {rel} contiene l'intestazione del payload: non impacchettabile")
             return 1
         commented = "\n".join(("# " + l) if l else "#" for l in text.split("\n"))
@@ -401,62 +246,108 @@ def pack(root: Path) -> int:
         return 1
     print(f"\nPayload rigenerato e riletto: {r.stdout.strip()}")
 
-    ok = smoke_test()
-    return 0 if ok else 1
+    return 0 if smoke_test() else 1
 
 
 def smoke_test() -> bool:
     """
-    Monta un repo finto con SOLO cio' che l'inizializzatore genera, e ci fa girare il
-    lint che l'inizializzatore genera.
+    Usa lo script appena scritto su un repository finto, dall'inizio: cartella vuota,
+    primo commit, codice che compare dopo in una directory qualunque.
 
-    Esiste perche' due volte di fila lo scheletro di status.md ha fatto fallire il
-    proprio lint su una parola che il lessico neutro non conteneva (`Esito`, poi
-    `HEAD`). Correggere l'istanza non chiude la classe: solo eseguirlo davvero lo fa.
-    Uno strumento che accusa il file che ha appena scritto non viene creduto.
+    Esiste perche' ogni difetto trovato finora stava in un passaggio che nessuno aveva
+    eseguito: lo scheletro di status.md che non passava il proprio lint; un controllo
+    del lint che andava in crash in ogni repository tranne quello di origine, mascherato
+    da avviso; un repository nato vuoto che restava sorvegliato su una cartella
+    inesistente. Correggere l'istanza non chiude la classe: solo eseguirlo davvero lo fa.
     """
     import shutil
     import tempfile
 
-    payload = load_payload()
     tmp = Path(tempfile.mkdtemp(prefix="agent-context-smoke-"))
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+               GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf",
+               GIT_CONFIG_VALUE_0="false")
+    failures = []
+
+    def run(*args, stdin=None):
+        return subprocess.run(args, cwd=str(tmp), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env, input=stdin)
+
+    def step(name, cond, detail=""):
+        if not cond:
+            failures.append(f"{name}" + (f"\n      {detail}" if detail else ""))
+
+    def lint(name):
+        r = run(sys.executable, "scripts/docs_lint.py")
+        out = r.stdout + r.stderr
+        step(f"{name}: il lint esce 0", r.returncode == 0, _lint_lines(out))
+        step(f"{name}: nessun errore interno del lint", "[INTERNO]" not in out,
+             _lint_lines(out))
+        return out
+
+    init = [sys.executable, str(Path(__file__).resolve())]
     try:
-        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
-                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
-        run = lambda *a: subprocess.run(a, cwd=str(tmp), capture_output=True,
-                                        text=True, encoding="utf-8", env=env)
         run("git", "init", "-q", ".")
-        (tmp / "src").mkdir()
-        (tmp / "src" / "main.c").write_text("int main(void){return 0;}\n", encoding="utf-8")
-        for rel in ("scripts/docs_lint.py", ".claude/hooks/hooklib.py"):
-            dst = tmp / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(payload[rel], encoding="utf-8", newline="\n")
+
+        # 1. Cartella vuota, nessun commit.
+        r = run(*init)
+        step("repo vuoto: l'inizializzatore esce 0", r.returncode == 0, r.stderr[-800:])
+        lint("repo vuoto")
+
+        # 2. Primo commit, e secondo giro: lo scheletro intatto riceve il marcatore.
         run("git", "add", "-A")
-        run("git", "commit", "-q", "-m", "base")
-        sha = run("git", "rev-parse", "--short", "HEAD").stdout.strip()
+        run("git", "commit", "-q", "-m", "init")
+        r = run(*init)
+        status = (tmp / STATUS_FILE).read_text(encoding="utf-8")
+        step("dopo il primo commit: marcatore aggiunto allo scheletro",
+             "context-verified-at:" in status, r.stdout[-800:])
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "marcatore")
+        lint("dopo il primo commit")
 
-        doc = tmp / "docs" / "context"
-        doc.mkdir(parents=True, exist_ok=True)
-        (doc / "status.md").write_text(
-            STATUS_SKELETON.format(marker=f"\n<!-- context-verified-at: {sha} -->\n",
-                                   today=date.today().isoformat()),
-            encoding="utf-8", newline="\n")
-
-        r = subprocess.run([sys.executable, "scripts/docs_lint.py"], cwd=str(tmp),
-                           capture_output=True, text=True, encoding="utf-8", env=env)
-        if r.returncode == 0:
-            print("Prova a vuoto: lo scheletro generato passa il lint generato.")
-            return True
-        print("\nPROVA A VUOTO FALLITA — cio' che questo script genera non passa il\n"
-              "controllo che questo script genera. Payload scritto ma da correggere:\n",
-              file=sys.stderr)
-        for line in r.stdout.splitlines():
-            if line.strip().startswith("[") or line.startswith("ERRORI"):
-                print("  " + line.strip(), file=sys.stderr)
-        return False
+        # 3. Il codice compare dopo, in una directory che nessuno ha dichiarato.
+        (tmp / "lib").mkdir()
+        (tmp / "lib" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s1"}')
+        step("codice nuovo non committato: Stop blocca", r.returncode == 2
+             and "lib" in r.stderr, f"exit {r.returncode}: {r.stderr[-400:]}")
+        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s1"}')
+        step("Stop non blocca due volte nella stessa sessione", r.returncode == 0,
+             f"exit {r.returncode}")
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "codice in lib")
+        out = lint("codice comparso dopo")
+        step("il lint vede il commit sul codice nuovo",
+             "[FRESCHEZZA]" in out and "lib/" in out, _lint_lines(out))
+        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s2"}')
+        step("codice nuovo committato: Stop blocca in una sessione nuova",
+             r.returncode == 2 and "lib/" in r.stderr, f"exit {r.returncode}: {r.stderr[-400:]}")
+        r = run(sys.executable, ".claude/hooks/session_start.py")
+        step("SessionStart esce 0 e inietta lo stato",
+             r.returncode == 0 and "Stato del progetto" in r.stdout
+             and "lib/" in r.stdout, f"exit {r.returncode}: {r.stdout[-400:]}")
+        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin="non json")
+        step("Stop con input malformato non va in errore", r.returncode in (0, 2),
+             f"exit {r.returncode}")
+        step("nessun __pycache__ lasciato nel repository",
+             not any(tmp.rglob("__pycache__")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    if not failures:
+        print("Prova a vuoto: repo vuoto, primo commit e codice comparso dopo, tutto ok.")
+        return True
+    print("\nPROVA A VUOTO FALLITA — cio' che questo script genera non si comporta come\n"
+          "dovrebbe. Payload scritto ma da correggere:", file=sys.stderr)
+    for f in failures:
+        print("  - " + f, file=sys.stderr)
+    return False
+
+
+def _lint_lines(out: str) -> str:
+    return "\n      ".join(l.strip() for l in out.splitlines()
+                           if l.strip().startswith("[") or l.startswith("ERRORI"))
 
 
 # ----------------------------------------------------------------------------- utili
@@ -482,22 +373,25 @@ def repo_root():
     return None
 
 
+def head_sha(root):
+    sha = git(root, "rev-parse", "--short", "HEAD")
+    return sha if re.fullmatch(r"[0-9a-f]{7,40}", sha or "") else None
+
+
 class Writer:
     """
     Due categorie di file, e la distinzione e' quella che rende --force sicuro.
 
-    GESTITI (lint, hook, guida): li possiede questo script. Sovrascriverli con --force
-    e' il modo previsto di AGGIORNARE un repo gia' inizializzato quando la versione di
-    riferimento migliora.
+    GESTITI (lint, modulo comune, hook, guida): li possiede questo script. Sovrascriverli
+    con --force e' il modo previsto di AGGIORNARE un repo gia' inizializzato.
 
-    SEME (docs/context/status.md): e' solo un punto di partenza, e da li' in poi
-    contiene lavoro umano. Non si sovrascrive MAI, nemmeno con --force: rigenerarlo
-    vorrebbe dire cancellare lo stato del progetto per aggiornare uno script.
+    SEME (status.md, config.toml): sono solo un punto di partenza, e da li' in poi
+    contengono lavoro umano. Non si sovrascrivono MAI, nemmeno con --force.
     """
 
     def __init__(self, root: Path, force: bool, dry: bool):
         self.root, self.force, self.dry = root, force, dry
-        self.written, self.skipped, self.protected = [], [], []
+        self.written, self.updated, self.skipped, self.protected = [], [], [], []
 
     def put(self, rel: str, content: str, seed: bool = False) -> None:
         p = self.root / rel
@@ -508,12 +402,129 @@ class Writer:
             if not self.force:
                 self.skipped.append(rel)
                 return
-        self.written.append(rel)
+        (self.updated if p.exists() else self.written).append(rel)
         if self.dry:
             return
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8", newline="\n")
 
+
+# ------------------------------------------------------------ migrazione e marcatore
+
+TUNING_BEGIN = "# ==== TARATURA DEL PROGETTO (inizio) ===="
+TUNING_END = "# ==== TARATURA DEL PROGETTO (fine) ===="
+LEGACY_TABLES = [("NOT_SYMBOLS", "not_symbols"), ("EXPECTED_ABSENT", "expected_absent"),
+                 ("EXTERNAL_SYMBOLS", "external_symbols"), ("RECEIVED_DOCS", "received_docs")]
+
+
+def legacy_tuning(root: Path, payload: dict) -> dict:
+    """
+    Le liste di dominio di un lint della versione precedente, che le teneva in un blocco
+    di taratura dentro lo script. Servono a riempire config.toml la prima volta che
+    viene creato, cosi' --force non cancella la taratura fatta a mano.
+
+    Le costanti su dove sta il codice non si migrano: adesso si rilevano.
+    """
+    p = root / "scripts" / "docs_lint.py"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    i, j = text.find(TUNING_BEGIN), text.find(TUNING_END)
+    if i < 0 or j < i:
+        return {}
+    try:
+        tree = ast.parse(text[i:j])
+    except SyntaxError:
+        return {}
+    # Le parole del nucleo neutro stanno gia' nel lint nuovo: migrarle sarebbe rumore.
+    core_words = set()
+    m = re.search(r"NOT_SYMBOLS_CORE = (\{.*?\n\})", payload.get("scripts/docs_lint.py", ""), re.S)
+    if m:
+        try:
+            core_words = {w.lower() for w in ast.literal_eval(m.group(1))}
+        except (ValueError, SyntaxError):
+            pass
+
+    found = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            continue
+        name = node.targets[0].id
+        table = dict(LEGACY_TABLES).get(name)
+        if not table:
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(value, dict):
+            entries = {str(k): str(v) for k, v in value.items()}
+        elif isinstance(value, (set, list, tuple)):
+            entries = {str(k): "migrato dalla taratura della versione precedente"
+                       for k in value}
+        else:
+            continue
+        if table == "not_symbols":
+            entries = {k: v for k, v in entries.items() if k.lower() not in core_words}
+        if entries:
+            found[table] = entries
+
+    # Prefissi di percorsi esterni scritti direttamente nel codice del controllo 2
+    # (`tok.startswith("zephyr/")`): adesso sono voci di external_symbols che finiscono
+    # con "/". `build/` resta escluso dal lint nuovo per conto suo.
+    for prefix in re.findall(r'tok\.startswith\("([^"]+/)"\)', text):
+        if prefix != "build/":
+            found.setdefault("external_symbols", {}).setdefault(
+                prefix, "prefisso esterno migrato dalla versione precedente del lint")
+    return found
+
+
+def render_config(seed: str, tables: dict) -> str:
+    """Scrive le voci migrate sotto le rispettive tabelle del seme, dopo i commenti."""
+    lines = seed.split("\n")
+    for table, entries in tables.items():
+        header = f"[lint.{table}]"
+        if header not in lines:
+            continue
+        k = lines.index(header) + 1
+        while k < len(lines) and lines[k].startswith("#"):
+            k += 1
+        new = [f"{json.dumps(key, ensure_ascii=False)} = {json.dumps(val, ensure_ascii=False)}"
+               for key, val in sorted(entries.items(), key=lambda kv: kv[0].lower())]
+        lines[k:k] = new
+    return "\n".join(lines)
+
+
+def skeleton_intact(text: str) -> bool:
+    """status.md e' ancora lo scheletro, a parte la data? Allora e' ancora nostro."""
+    norm = lambda s: re.sub(r"\s+", " ",
+                            re.sub(r"\*\*Ultimo aggiornamento: [^*]*\*\*", "", s)).strip()
+    return norm(text) == norm(STATUS_SKELETON.format(marker="", today=""))
+
+
+def add_marker(root: Path, dry: bool) -> str:
+    """
+    Aggiunge il marcatore di freschezza allo scheletro rimasto senza, perche' era stato
+    scritto prima del primo commit. Solo se lo scheletro e' intatto: uno status.md
+    toccato a mano contiene lavoro, e il marcatore lo mette chi lo riconcilia.
+    """
+    p = root / STATUS_FILE
+    sha = head_sha(root)
+    if not p.is_file() or sha is None:
+        return ""
+    text = p.read_text(encoding="utf-8", errors="replace")
+    if "context-verified-at:" in text or not skeleton_intact(text):
+        return ""
+    if not dry:
+        p.write_text(STATUS_SKELETON.format(marker=f"\n<!-- context-verified-at: {sha} -->\n",
+                                            today=date.today().isoformat()),
+                     encoding="utf-8", newline="\n")
+    return f"marcatore di freschezza aggiunto allo scheletro di status.md ({sha})"
+
+
+# ---------------------------------------------------------------------- hook di Claude
 
 HOOK_EVENTS = [("SessionStart", "session_start.py"), ("Stop", "stop_check.py")]
 
@@ -581,7 +592,7 @@ def unhook_shared(root: Path, dry: bool) -> str:
     """
     Toglie i NOSTRI hook dal settings.json condiviso, se ce li ha ancora.
 
-    Fino alla versione precedente di questo script ci stavano li'. Adesso stanno nel
+    Fino a una versione precedente di questo script ci stavano li'. Adesso stanno nel
     file locale, e dichiararli in tutti e due NON e' innocuo: girano due volte.
     (Provato su Claude Code 2.1.269: sonda in entrambi i file, due esecuzioni.)
 
@@ -722,28 +733,56 @@ def interpreter_works(nome: str) -> bool:
         return False
 
 
+# ------------------------------------------------------------------------- diagnosi
+
 def diagnose(root: Path, interp: str) -> list:
     """
     Cosa resta NON funzionante dopo l'inizializzazione. Serve soprattutto quando il
     repo aveva gia' un contesto: i file esistenti vengono rispettati, e proprio per
-    questo restano privi dei marcatori che gli hook usano.
+    questo possono restare privi di cio' che lint e hook usano.
     """
     problemi = []
 
-    st = root / "docs" / "context" / "status.md"
+    lint = root / "scripts" / "docs_lint.py"
+    if lint.is_file() and "context_core" not in lint.read_text(encoding="utf-8",
+                                                               errors="replace"):
+        problemi.append(
+            "scripts/docs_lint.py e gli hook sono della versione precedente, con la\n"
+            "     taratura scritta dentro gli script. Rilancia con --force per aggiornarli:\n"
+            "     le liste di eccezioni sono gia' state copiate in docs/context/config.toml,\n"
+            "     e config.toml non viene mai sovrascritto.")
+    elif not (root / "scripts" / "context_core.py").is_file():
+        problemi.append("scripts/context_core.py manca: lint e hook non sanno dove sta il "
+                        "codice. Rilancia con --force.")
+
+    c = root / CONFIG_FILE
+    if c.is_file():
+        try:
+            with open(c, "rb") as fh:
+                tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            problemi.append(f"{CONFIG_FILE} non e' TOML valido ({exc}): il lint lo "
+                            f"segnala come errore e ne ignora le eccezioni.")
+
+    st = root / STATUS_FILE
     if not st.is_file():
-        problemi.append("docs/context/status.md non esiste: gli hook non hanno "
-                        "niente da leggere.")
+        problemi.append(f"{STATUS_FILE} non esiste: gli hook non hanno niente da leggere.")
     else:
         text = st.read_text(encoding="utf-8", errors="replace")
         if not re.search(r"<!--\s*context-verified-at:\s*[0-9a-f]{7,40}\s*-->", text):
-            problemi.append(
-                "docs/context/status.md non ha il marcatore di freschezza. Aggiungi in "
-                "testa:\n     <!-- context-verified-at: $(git rev-parse --short HEAD) -->\n"
-                "     Senza, il controllo 5 del lint e l'avviso dell'hook non funzionano.")
+            if head_sha(root) is None:
+                problemi.append(
+                    "il repository non ha ancora un commit, quindi status.md non ha il\n"
+                    "     marcatore di freschezza. Fai il primo commit e rilancia questo "
+                    "script:\n     lo aggiunge da solo.")
+            else:
+                problemi.append(
+                    f"{STATUS_FILE} non ha il marcatore di freschezza. Aggiungi in "
+                    "testa:\n     <!-- context-verified-at: $(git rev-parse --short HEAD) -->\n"
+                    "     Senza, il controllo 5 del lint e l'avviso dell'hook non funzionano.")
         if "session-start: begin" not in text:
             problemi.append(
-                "docs/context/status.md non ha i blocchi <!-- session-start: begin -->\n"
+                f"{STATUS_FILE} non ha i blocchi <!-- session-start: begin -->\n"
                 "     ... <!-- session-start: end -->. L'hook di avvio non inietta niente:\n"
                 "     delimita le sezioni che vuoi vedere a ogni sessione (cosa blocca,\n"
                 "     difetti aperti).")
@@ -781,7 +820,7 @@ def diagnose(root: Path, interp: str) -> list:
                         f"     oppure rilancia l'inizializzatore, che riscrive "
                         f"l'interprete.")
         except OSError:
-            problemi.append(".claude/settings.json non leggibile.")
+            problemi.append(".claude/settings.local.json non leggibile.")
 
     return problemi
 
@@ -794,7 +833,7 @@ def ensure_gitignore(root: Path, dry: bool) -> str:
         return "gia' a posto"
     if not dry:
         with open(gi, "a", encoding="utf-8") as fh:
-            fh.write("\n# Claude Code: permessi locali della macchina, non condivisi\n")
+            fh.write("\n# Claude Code: impostazioni locali della macchina, non condivise\n")
             for l in add:
                 fh.write(l + "\n")
     return f"aggiunte {len(add)} righe"
@@ -807,10 +846,11 @@ def main() -> int:
         description="Prepara la struttura di contesto/memoria per agenti in un repo.")
     ap.add_argument("--dry-run", action="store_true", help="dice cosa farebbe")
     ap.add_argument("--force", action="store_true",
-                    help="aggiorna lint, hook e guida alla versione di riferimento. "
-                         "Non tocca docs/context/status.md, che e' tuo")
+                    help="aggiorna lint, hook e guida. Non tocca status.md ne' "
+                         "config.toml, che sono tuoi")
     ap.add_argument("--pack", action="store_true",
-                    help="rigenera il payload dal repo corrente (progetto di riferimento)")
+                    help="nel repository sorgente dello strumento: rigenera il payload "
+                         "da payload/")
     ap.add_argument("--self-test", action="store_true",
                     help="verifica che il payload sia leggibile ed esce")
     args = ap.parse_args()
@@ -829,13 +869,13 @@ def main() -> int:
         return 1
 
     if args.pack:
-        print(f"Rigenero il payload da {root}")
+        print(f"Rigenero il payload da {root / PAYLOAD_DIR}")
         return pack(root)
 
     payload = load_payload()
     if not payload:
-        print("Questo file non ha payload: rigeneralo con --pack in un progetto di "
-              "riferimento.", file=sys.stderr)
+        print("Questo file non ha payload: rigeneralo con --pack nel repository "
+              "sorgente dello strumento.", file=sys.stderr)
         return 1
 
     interp = "python" if sys.platform == "win32" else "python3"
@@ -845,51 +885,59 @@ def main() -> int:
         print("MODALITA' DRY-RUN: non viene scritto niente.")
     print()
 
-    det = detect_project(root)
-    print("Rilevato in questo repo (dai file tracciati da git):")
-    print(f"  directory sorgente : {', '.join(det['code_dirs'])}")
-    print(f"  estensioni         : {' '.join(det['code_suffixes'][:14])}"
-          + (" …" if len(det["code_suffixes"]) > 14 else ""))
-    print(f"  sorvegliate da Stop: {', '.join(det['code_paths'])}")
-    print("  (finiscono nelle costanti in cima ai due script; correggile se ho sbagliato)")
-    print()
+    core = payload_core(payload)
+    if core is not None:
+        cfg, _ = core.load_config(root)
+        files = core.code_files(root, cfg)
+        _, labels = core.code_scope(root, cfg)
+        print("Codice rilevato adesso (lint e hook lo rilevano di nuovo a ogni esecuzione):")
+        if labels:
+            print(f"  {len(files)} file in {', '.join(labels[:12])}"
+                  + (" …" if len(labels) > 12 else ""))
+        else:
+            print("  nessuno, per ora. Va bene: quando il codice arriva, viene visto.")
+        print()
 
-    filled = {
-        "scripts/docs_lint.py": NEUTRAL_LINT_TUNING.format(
-            code_dirs=repr(det["code_dirs"]),
-            code_files=repr(det["code_files"]),
-            code_suffixes="{" + ", ".join(f'"{s}"' for s in det["code_suffixes"]) + "}",
-            skip_dirs='{"build", ".git", "__pycache__", "node_modules", "dist"}'),
-        ".claude/hooks/hooklib.py": NEUTRAL_HOOK_TUNING.format(
-            code_paths=repr(det["code_paths"])),
-    }
+    # La taratura di una versione precedente va letta PRIMA che --force riscriva il lint.
+    migrated = {} if (root / CONFIG_FILE).exists() else legacy_tuning(root, payload)
 
     w = Writer(root, args.force, args.dry_run)
-
     for rel, content in payload.items():
-        if rel in filled:
-            content, done = replace_tuning(content, filled[rel])
-            if not done:
-                print(f"  ATTENZIONE: {rel} nel payload non ha i marcatori di "
-                      f"taratura: restano i valori neutri, da ritarare a mano.")
-        w.put(rel, content)
+        if rel == CONFIG_FILE and migrated:
+            rendered = render_config(content, migrated)
+            try:
+                tomllib.loads(rendered)
+                content = rendered
+            except tomllib.TOMLDecodeError as exc:
+                print(f"  ATTENZIONE: la taratura precedente non e' migrabile ({exc}): "
+                      f"config.toml parte vuoto, riportala a mano.")
+                migrated = {}
+        w.put(rel, content, seed=rel in SEED_FILES)
 
     # In un repo senza ancora un commit non esiste uno sha da scrivere. Meglio
-    # nessun marcatore, che la diagnosi segnala, di un marcatore finto che passa
-    # il controllo di presenza e mente sul contenuto.
-    sha = git(root, "rev-parse", "--short", "HEAD")
-    marker = f"\n<!-- context-verified-at: {sha} -->\n" if re.fullmatch(r"[0-9a-f]{7,40}", sha or "") else "\n"
-    w.put("docs/context/status.md",
-          STATUS_SKELETON.format(marker=marker, today=date.today().isoformat()),
+    # nessun marcatore, che il giro dopo il primo commit aggiunge, di un marcatore
+    # finto che passa il controllo di presenza e mente sul contenuto.
+    sha = head_sha(root)
+    marker = f"\n<!-- context-verified-at: {sha} -->\n" if sha else "\n"
+    status_existed = (root / STATUS_FILE).exists()
+    w.put(STATUS_FILE, STATUS_SKELETON.format(marker=marker, today=date.today().isoformat()),
           seed=True)
 
     for rel in w.written:
         print(f"  creato   {rel}")
+    for rel in w.updated:
+        print(f"  aggiornato {rel}")
     for rel in w.skipped:
-        print(f"  esisteva {rel}  (--force lo aggiorna alla versione di riferimento)")
+        print(f"  esisteva {rel}  (--force lo aggiorna)")
     for rel in w.protected:
-        print(f"  TUO      {rel}  (contiene il tuo lavoro: mai sovrascritto, "
-              f"nemmeno con --force)")
+        print(f"  TUO      {rel}  (mai sovrascritto, nemmeno con --force)")
+    if migrated and CONFIG_FILE in w.written:
+        n = sum(len(v) for v in migrated.values())
+        print(f"  migrate  {n} voci di taratura dal lint precedente in {CONFIG_FILE}")
+    if status_existed:
+        fatto = add_marker(root, args.dry_run)
+        if fatto:
+            print(f"  status:     {fatto}")
     print(f"  settings:   {merge_settings(root, interp, args.dry_run)}"
           f"  ->  .claude/settings.local.json, che git non traccia")
     ripulito = unhook_shared(root, args.dry_run)
@@ -904,9 +952,6 @@ def main() -> int:
             print("\n" + "!" * 74)
             print(f"DA SISTEMARE — {n} cosa non funziona ancora." if n == 1
                   else f"DA SISTEMARE — {n} cose non funzionano ancora.")
-            print("Tipicamente perche' un file c'era gia' ed e' stato rispettato, quindi")
-            print("non ha i marcatori che gli hook usano; oppure perche' il repo non ha")
-            print("ancora un commit a cui ancorare il marcatore di freschezza.")
             print("!" * 74)
             for n, msg in enumerate(problemi, 1):
                 print(f"  {n}. {msg}")
@@ -917,12 +962,10 @@ def main() -> int:
     print("Fatta la meccanica. Il contesto lo deve ancora scrivere l'agente.")
     print("=" * 74)
     print("""
-Non devi ritarare niente a mano. Le costanti rilevabili (dove sta il codice, che
-estensioni ha, cosa sorveglia lo Stop) sono gia' scritte nei due script, e le trovi
-qui sopra sotto "Rilevato": guardale, e correggile SOLO se ho sbagliato.
-Le altre tre — NOT_SYMBOLS, EXPECTED_ABSENT, EXTERNAL_SYMBOLS — partono vuote di
-proposito e si riempiono guardando i falsi positivi del primo giro di lint: e' un
-lavoro di dominio, ed e' gia' chiesto nel prompt qui sotto.
+Non devi ritarare niente a mano. Dove sta il codice lo rilevano il lint e gli hook a
+ogni esecuzione. La taratura di dominio sta in docs/context/config.toml, parte vuota di
+proposito e si riempie guardando i falsi positivi del primo giro di lint: e' gia'
+chiesto nel prompt qui sotto.
 
 1. Apri una sessione dell'agente e incollagli questo prompt:
 """)
@@ -936,7 +979,7 @@ lavoro di dominio, ed e' gia' chiesto nel prompt qui sotto.
     print("-" * 74)
     print("""
 2. Quando ha finito, verifica tu:
-     python scripts/docs_lint.py          deve uscire pulito
+     python scripts/docs_lint.py          deve uscire senza errori
      git log --oneline -5                 cosa ha committato
    e che l'hook di avvio giri davvero: apri una sessione nuova e guarda
      .git/claude-hooks.log
@@ -953,583 +996,25 @@ if __name__ == "__main__":
 
 
 # ==== PAYLOAD (rigenerabile con --pack, non modificare a mano) ====
-# ---- AGENT-CONTEXT-FILE: scripts/docs_lint.py ----
-# #!/usr/bin/env python3
-# # -*- coding: utf-8 -*-
-# """
-# docs_lint — controlla che la documentazione per agenti dica ancora il vero.
-#
-# Questo progetto non ha CI ne' test automatici: e' l'unico controllo automatico che
-# esiste, e non guarda il firmware, guarda i documenti che lo descrivono.
-#
-# Cinque controlli:
-#
-#   1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
-#                         ricomparsi nel codice. La lista NON e' scritta qui: viene
-#                         letta dal documento, che resta l'unica fonte.
-#   2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/context/
-#                         esiste ancora nell'albero. E' il controllo che intercetta
-#                         una rinomina fatta senza aggiornare i documenti.
-#   3. EVIDENZA         — in docs/context/ ogni "verificato" porta una data, e il
-#                         lessico conversazionale ([Certo]/[Probabile]/[Ipotesi]) non
-#                         entra nei documenti. Stampa il cruscotto dei tre livelli.
-#   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
-#   5. FRESCHEZZA       — quanti commit hanno toccato le directory sorgente dopo
-#                         il punto in cui status.md dichiara di essere riconciliato.
-#
-# Uso:   python scripts/docs_lint.py [--quiet]
-# Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
-# """
-#
-# import io
-# import os
-# import re
-# import subprocess
-# import sys
-# from pathlib import Path
-#
-# if hasattr(sys.stdout, "buffer"):
-#     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-#
-# # --------------------------------------------------------------------------- setup
-#
-# def repo_root() -> Path:
-#     try:
-#         out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-#                              capture_output=True, text=True, encoding="utf-8")
-#         if out.returncode == 0 and out.stdout.strip():
-#             return Path(out.stdout.strip())
-#     except OSError:
-#         pass
-#     return Path(__file__).resolve().parent.parent
-#
-# ROOT = repo_root()
-# CONTEXT = ROOT / "docs" / "context"
-#
-# # ==== TARATURA DEL PROGETTO (inizio) ====
-# # Percorsi che compongono "il codice": tutto cio' che una rinomina toccherebbe.
-# # RILEVATI dall'inizializzatore guardando questo repo. Correggili se ha sbagliato.
-# CODE_DIRS = ["src"]
-# CODE_FILES = []
-# CODE_SUFFIXES = {".c", ".cc", ".cfg", ".cmake", ".conf", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx", ".kt", ".m", ".mm", ".php", ".ps1", ".py", ".rb", ".rs", ".scss", ".sh", ".sql", ".svelte", ".swift", ".toml", ".ts", ".tsx", ".txt", ".vue", ".yaml", ".yml"}
-# SKIP_DIRS = {"build", ".git", "__pycache__", "node_modules", "dist"}
-# # I file "meta" contengono la lista dei simboli banditi per poterla applicare o
-# # trasportare: vanno esclusi dal controllo 1, o si accusano da soli. Restano invece
-# # nell'albero per tutti gli altri controlli, altrimenti i simboli che definiscono
-# # risulterebbero inesistenti.
-# SELF = Path(__file__).resolve()
-# # L'inizializzatore puo' stare ovunque — di solito nella radice, dove lo si copia —
-# # quindi si cerca per nome invece di dare per scontato che sia in scripts/.
-# META_FILES = {SELF} | {p.resolve() for p in ROOT.rglob("agent_context_init.py")
-#                        if ".git" not in p.parts}
-#
-# # Token citati nei documenti che NON devono esistere nel codice, per costruzione:
-# # un identificatore ritirato, un modulo rimosso, il nome di un altro repository.
-# # VUOTO DI PROPOSITO: si riempie guardando i falsi positivi del primo giro.
-# # Ogni voce porta il motivo, e senza motivo non si aggiunge niente — o in sei mesi
-# # questa e' una discarica che silenzia anche i controlli veri.
-# EXPECTED_ABSENT = {
-#     # "NOME_RITIRATO": "perche' non deve esistere",
-# }
-#
-# # Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
-# # Sono citati nei documenti perche' spiegano un vincolo esterno. VUOTO DI PROPOSITO.
-# EXTERNAL_SYMBOLS = {
-#     # "API_DELLA_LIBRERIA": "di quale libreria, e perche' e' citata",
-# }
-#
-# # Parole che sembrano identificatori ma sono prosa, unita' di misura o nomi esterni.
-# # Qui c'e' solo il nucleo indipendente dalla lingua e dal dominio: il resto va
-# # aggiunto guardando i falsi positivi del primo giro, ed e' specifico della lingua
-# # in cui sono scritti i documenti.
-# NOT_SYMBOLS = {
-#     "true", "false", "null", "none", "void", "main", "data", "text", "info",
-#     "test", "build", "error", "warning", "debug", "http", "https", "json", "yaml",
-#     "git", "origin", "HEAD", "grep", "python", "node", "docker",
-#     "feat", "fix", "docs", "chore", "refactor", "style", "perf",
-#     # Parole usate dallo scheletro di status.md: senza, il primo giro del lint
-#     # segnala il file che l'inizializzatore ha appena scritto.
-#     "esito", "chi", "prova", "corrente", "regola", "dove", "livello", "nota",
-#     "head", "cronologia", "stato", "lavoro", "commit",
-#     "verificato", "dedotto", "assunto",
-# }
-# # ==== TARATURA DEL PROGETTO (fine) ====
-#
-# # La ricerca in NOT_SYMBOLS confronta il token gia' abbassato a minuscolo: una voce
-# # scritta in maiuscolo non combacerebbe mai, e il difetto sarebbe invisibile finche'
-# # quella parola non compare in un documento. Si normalizza qui, una volta.
-# NOT_SYMBOLS = {w.lower() for w in NOT_SYMBOLS}
-#
-# # Fuga esplicita per il caso legittimo: una riga che PARLA della convenzione invece di
-# # applicarla. Va scritta in chiaro nel documento, cosi' si vede e si puo' cercare.
-# IGNORE_MARK = "<!-- docs-lint: ignore -->"
-#
-# # Un token che ha questa forma non e' un simbolo del codice: e' un riferimento git.
-# GITREF_RE = re.compile(r"^(?:[0-9a-f]{7,40}|origin/[\w./-]+|feature/[\w./-]+|refs/[\w./-]+)$")
-#
-#
-# def read(p: Path) -> str:
-#     try:
-#         return p.read_text(encoding="utf-8")
-#     except (OSError, UnicodeDecodeError):
-#         return ""
-#
-#
-# def strip_fences(text: str) -> str:
-#     """Azzera i blocchi di codice recintati, tenendo la numerazione delle righe."""
-#     out, inside = [], False
-#     for line in text.split("\n"):
-#         if line.lstrip().startswith("```"):
-#             inside = not inside
-#             out.append("")
-#             continue
-#         out.append("" if inside else line)
-#     return "\n".join(out)
-#
-#
-# def code_files(include_meta=True):
-#     for name in CODE_FILES:
-#         p = ROOT / name
-#         if p.is_file():
-#             yield p
-#     for d in CODE_DIRS:
-#         base = ROOT / d
-#         if not base.is_dir():
-#             continue
-#         for p in base.rglob("*"):
-#             if any(part in SKIP_DIRS for part in p.parts):
-#                 continue
-#             if not include_meta and p.resolve() in META_FILES:
-#                 continue
-#             if p.is_file() and p.suffix.lower() in CODE_SUFFIXES:
-#                 yield p
-#
-#
-# def tracked_files():
-#     """Solo i file versionati: un documento di appunti non tracciato non fa fallire."""
-#     r = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-#                        encoding="utf-8", cwd=ROOT)
-#     if r.returncode != 0:
-#         return None
-#     return {(ROOT / line).resolve() for line in r.stdout.splitlines() if line.strip()}
-#
-#
-# CODE_BLOB = None
-#
-# def code_blob() -> str:
-#     global CODE_BLOB
-#     if CODE_BLOB is None:
-#         CODE_BLOB = "\n".join(read(p) for p in code_files())
-#     return CODE_BLOB
-#
-#
-# def context_files():
-#     return sorted(CONTEXT.glob("*.md")) if CONTEXT.is_dir() else []
-#
-#
-# class Report:
-#     def __init__(self, quiet=False):
-#         self.errors = []
-#         self.warns = []
-#         self.quiet = quiet
-#
-#     def error(self, check, msg):
-#         self.errors.append((check, msg))
-#
-#     def warn(self, check, msg):
-#         self.warns.append((check, msg))
-#
-#     def note(self, msg):
-#         if not self.quiet:
-#             print(msg)
-#
-#
-# # ------------------------------------------------------------ 1. feature bandite
-#
-# def check_banned(rep: Report):
-#     """La lista dei simboli banditi vive in invariants.md, non qui."""
-#     inv = CONTEXT / "invariants.md"
-#     if not inv.is_file():
-#         # Progetto appena inizializzato: gli invarianti non sono ancora stati scritti.
-#         # E' un lavoro da fare, non un guasto.
-#         rep.warn("BANDITE", "docs/context/invariants.md non esiste ancora: "
-#                             "il controllo 1 e' inattivo finche' non c'e'")
-#         return
-#     text = read(inv)
-#     if not text:
-#         rep.error("BANDITE", "docs/context/invariants.md esiste ma non e' leggibile")
-#         return
-#
-#     m = re.search(r"##\s*Feature bandite\s*\n(.*?)(?=\n##\s|\Z)", text, re.S)
-#     if not m:
-#         # Un progetto puo' legittimamente non avere niente di bandito: e' un avviso,
-#         # non un errore. Errore lo diventa solo se la sezione c'e' ed e' malformata.
-#         rep.warn("BANDITE", "nessuna sezione '## Feature bandite' in invariants.md: "
-#                             "il controllo 1 e' inattivo. Se il progetto ha cose che non "
-#                             "devono tornare, dichiararle li' le rende verificabili")
-#         return
-#
-#     para = re.search(r"Nessun riferimento nel codice a:(.*?)(?:\n\s*\n|\n\|)", m.group(1), re.S)
-#     if not para:
-#         rep.error("BANDITE", "il paragrafo 'Nessun riferimento nel codice a:' non ha piu' "
-#                              "la forma attesa: aggiorna docs_lint.py o il documento")
-#         return
-#
-#     tokens = re.findall(r"`([^`]+)`", para.group(1))
-#     if not tokens:
-#         rep.error("BANDITE", "nessun simbolo bandito estratto dal paragrafo")
-#         return
-#
-#     files = list(code_files(include_meta=False))
-#     hits = 0
-#     for tok in tokens:
-#         # Confine a sinistra: senza, `ff.h` trova `poweroff.h`. `*` diventa un glob.
-#         body = re.escape(tok).replace(r"\*", r"\w*")
-#         pattern = r"(?<![\w./])" + body
-#         found = [p for p in files if re.search(pattern, read(p), re.I)]
-#         if found:
-#             hits += 1
-#             where = ", ".join(str(p.relative_to(ROOT)) for p in found[:4])
-#             rep.error("BANDITE", f"`{tok}` e' ricomparso nel codice: {where}")
-#     rep.note(f"  simboli banditi controllati: {len(tokens)}  —  ricomparsi: {hits}")
-#
-#
-# # --------------------------------------------------------- 2. identificatori vivi
-#
-# PATH_RE = re.compile(r"^[\w./\-]+\.(c|h|py|json|conf|md|txt|yml|yaml|rst|dts|overlay|pem)$")
-# IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{3,}$")
-#
-#
-# def path_exists_anywhere(rel: str) -> bool:
-#     """
-#     Un documento puo' citare un file per nome senza il percorso completo: `foo.md`
-#     che sta in docs/, mentre chi lo cita e' in docs/context/. Cercarlo solo dalla
-#     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
-#     sono il modo in cui un lint smette di essere letto. Regge anche i glob (`epd47/*.h`).
-#     """
-#     if (ROOT / rel).exists():
-#         return True
-#     try:
-#         for hit in ROOT.glob("**/" + rel):
-#             if not any(part in SKIP_DIRS for part in hit.parts):
-#                 return True
-#     except (ValueError, OSError, IndexError):
-#         pass
-#     return False
-#
-#
-# def _is_prose(tok: str) -> bool:
-#     """Frammenti di comando, formule e frasi fra backtick non sono identificatori."""
-#     if " " in tok or "=" in tok or "(" in tok or "×" in tok or "@" in tok:
-#         return True
-#     # Segnaposto in un template: topic MQTT, rotta HTTP, nome di file parametrico.
-#     # `epic/{mac}/data` non e' un percorso che debba esistere sul disco.
-#     if "{" in tok or "}" in tok or "<" in tok or ">" in tok:
-#         return True
-#     # Unita' di misura: due segmenti, il secondo cortissimo e alfabetico — `umm/s`,
-#     # `km/h`, `entry/s`. La soglia stretta sul secondo segmento evita di scambiare
-#     # per unita' una cartella vera come `epic/data`.
-#     seg = tok.split("/")
-#     if len(seg) == 2 and seg[0].isalpha() and seg[1].isalpha() and len(seg[1]) <= 3:
-#         return True
-#     if tok.startswith(("-", ".", "~", "#", "/")):
-#         return True
-#     if tok.startswith("build/"):
-#         return True
-#     # `Imu_Acq_TryClaim/Release/Current`: scorciatoia di prosa, non un percorso.
-#     if "/" in tok and not PATH_RE.match(tok):
-#         if any(seg[:1].isupper() for seg in tok.split("/") if seg):
-#             return True
-#     return False
-#
-#
-# def check_identifiers(rep: Report):
-#     tokens = {}
-#     for p in context_files():
-#         for m in re.finditer(r"`([^`\n]+)`", strip_fences(read(p))):
-#             tok = m.group(1).strip()
-#             tokens.setdefault(tok, set()).add(p)
-#
-#     checked = missing = skipped = 0
-#     for tok, where in sorted(tokens.items(), key=lambda kv: kv[0]):
-#         base = tok.rstrip("*/")
-#         names = ", ".join(sorted(p.name for p in where))
-#
-#         if (_is_prose(tok) or GITREF_RE.match(tok) or tok.startswith("zephyr/")
-#                 or tok.lower() in NOT_SYMBOLS or base.lower() in NOT_SYMBOLS
-#                 or base in EXTERNAL_SYMBOLS
-#                 or any(k.rstrip("*") in tok for k in EXPECTED_ABSENT)):
-#             skipped += 1
-#             continue
-#
-#         if PATH_RE.match(tok) or "/" in tok:
-#             checked += 1
-#             rel = tok.rstrip("/")
-#             # Relativo a chi lo cita, poi ovunque nell'albero (glob compresi).
-#             if any((p.parent / rel).exists() for p in where) or path_exists_anywhere(rel):
-#                 continue
-#             missing += 1
-#             rep.error("IDENT", f"percorso `{tok}` non esiste  (citato in {names})")
-#             continue
-#
-#         if IDENT_RE.match(tok):
-#             checked += 1
-#             # Sottostringa, non parola intera: i documenti citano di proposito la coda
-#             # di un enum lungo (`INFO_ID_STREAM` per
-#             # USB_CONNECTION_PACKET_INFO_ID_STREAM). E' la regola dell'altitudine:
-#             # il documento non ripete il prefisso, il controllo lo tollera.
-#             if base in code_blob():
-#                 continue
-#             missing += 1
-#             rep.error("IDENT", f"simbolo `{tok}` non esiste nel codice  (citato in {names})")
-#         else:
-#             skipped += 1
-#
-#     rep.note(f"  token controllati: {checked}  —  non trovati: {missing}  "
-#              f"—  ignorati (prosa o assenza voluta): {skipped}")
-#
-#
-# # ------------------------------------------------------------- 3. livelli evidenza
-#
-# LEVELS = ("verificato", "dedotto", "assunto")
-# DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# CONV_RE = re.compile(r"\[(Certo|Probabile|Ipotesi)\]")
-#
-#
-# def check_evidence(rep: Report):
-#     counts = {lvl: 0 for lvl in LEVELS}
-#     for p in context_files():
-#         text = strip_fences(read(p))
-#         in_legend = False
-#         for n, line in enumerate(text.split("\n"), 1):
-#             for lvl in LEVELS:
-#                 counts[lvl] += len(re.findall(r"\*\*" + lvl + r"\*\*", line))
-#
-#             # La sezione che DEFINISCE il lessico e' esente dal lessico che definisce.
-#             if re.match(r"^##\s", line):
-#                 in_legend = "livelli di evidenza" in line.lower()
-#             if in_legend or IGNORE_MARK in line:
-#                 continue
-#
-#             if re.search(r"\*\*verificato\*\*", line) and not DATE_RE.search(line):
-#                 rep.error("EVIDENZA",
-#                           f"{p.name}:{n} — '**verificato**' senza data: "
-#                           f"un verificato senza data non e' verificabile")
-#
-#             # collaboration.md e' il file che DEFINISCE il lessico conversazionale.
-#             m = CONV_RE.search(line)
-#             if m and p.name != "collaboration.md":
-#                 rep.error("EVIDENZA",
-#                           f"{p.name}:{n} — [{m.group(1)}] e' il lessico della "
-#                           f"conversazione: nei documenti si usa "
-#                           f"verificato/dedotto/assunto")
-#     rep.note("  cruscotto evidenza in docs/context/:  " +
-#              "  ".join(f"{lvl}={counts[lvl]}" for lvl in LEVELS))
-#     if counts["verificato"] == 0:
-#         rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/context/")
-#
-#
-# # ---------------------------------------------------------------- 4. link e ancore
-#
-# def slug(title: str) -> str:
-#     t = title.strip().lower()
-#     t = re.sub(r"`([^`]*)`", r"\1", t)
-#     t = re.sub(r"<[^>]+>", "", t)
-#     t = "".join(ch for ch in t if ch.isalnum() or ch in " -_")
-#     return t.replace(" ", "-")
-#
-#
-# LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
-#
-#
-# def check_links(rep: Report):
-#     anchors = {}
-#     for p in ROOT.rglob("*.md"):
-#         if any(part in SKIP_DIRS for part in p.parts):
-#             continue
-#         text = strip_fences(read(p))
-#         found = set()
-#         for line in text.split("\n"):
-#             m = re.match(r"^#{1,6}\s+(.*)$", line)
-#             if m:
-#                 found.add(slug(m.group(1)))
-#         for m in re.finditer(r'<a\s+id="([^"]+)"', text):
-#             found.add(m.group(1))
-#         anchors[p.resolve()] = found
-#
-#     targets = [ROOT / "AGENTS.md", ROOT / "CLAUDE.md"]
-#     targets += context_files() + sorted((ROOT / "docs").glob("*.md"))
-#     tracked = tracked_files()
-#
-#     checked = broken = skipped_untracked = skipped_received = 0
-#     for p in targets:
-#         if not p.is_file():
-#             continue
-#         # Un file di appunti non tracciato non deve far fallire il controllo.
-#         if tracked is not None and p.resolve() not in tracked and p not in context_files():
-#             skipped_untracked += 1
-#             continue
-#         # Un documento ricevuto non e' nostro da riparare: vedi RECEIVED_DOCS.
-#         if p.name in RECEIVED_DOCS:
-#             skipped_received += 1
-#             continue
-#         for m in LINK_RE.finditer(strip_fences(read(p))):
-#             target = m.group(2).strip()
-#             if target.startswith(("http://", "https://", "mailto:", "#!")):
-#                 continue
-#             path, _, anchor = target.partition("#")
-#             checked += 1
-#             if path == "":
-#                 dest = p.resolve()
-#             else:
-#                 dest = (p.parent / path).resolve()
-#                 if not dest.exists():
-#                     broken += 1
-#                     rep.error("LINK", f"{p.name} -> {target}  (file inesistente)")
-#                     continue
-#             if anchor:
-#                 if dest not in anchors:
-#                     broken += 1
-#                     rep.error("LINK", f"{p.name} -> {target}  (file non indicizzato)")
-#                 elif anchor not in anchors[dest]:
-#                     broken += 1
-#                     rep.error("LINK", f"{p.name} -> {target}  (ancora assente)")
-#     rep.note(f"  link locali controllati: {checked}  —  rotti: {broken}"
-#              + (f"  —  file non tracciati saltati: {skipped_untracked}"
-#                 if skipped_untracked else "")
-#              + (f"  —  documenti ricevuti saltati: {skipped_received}"
-#                 if skipped_received else ""))
-#
-#
-# # ------------------------------------------------------------------ 5. freschezza
-#
-# MARKER_RE = re.compile(r"<!--\s*context-verified-at:\s*([0-9a-f]{7,40})\s*-->")
-#
-#
-# def check_freshness(rep: Report):
-#     status = CONTEXT / "status.md"
-#     text = read(status)
-#     if not text:
-#         rep.error("FRESCHEZZA", "docs/context/status.md non leggibile")
-#         return
-#     m = MARKER_RE.search(text)
-#     if not m:
-#         rep.error("FRESCHEZZA",
-#                   "status.md non ha il marcatore <!-- context-verified-at: <sha> -->: "
-#                   "senza, la freschezza non e' misurabile")
-#         return
-#     sha = m.group(1)
-#     r = subprocess.run(["git", "log", "--oneline", f"{sha}..HEAD", "--", "src", "drivers"],
-#                        capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
-#     if r.returncode != 0:
-#         rep.warn("FRESCHEZZA", f"commit {sha} non trovato: il marcatore punta al vuoto")
-#         return
-#     lines = [l for l in r.stdout.splitlines() if l.strip()]
-#     if lines:
-#         rep.warn("FRESCHEZZA",
-#                  f"{len(lines)} commit hanno toccato src/ o drivers/ dopo {sha}, "
-#                  f"a cui status.md dichiara di essere riconciliato:\n      " +
-#                  "\n      ".join(lines[:8]))
-#     else:
-#         rep.note(f"  status.md riconciliato a {sha}: nessun commit su src/ da allora")
-#
-#
-# # ------------------------------------------------------------------------- main
-#
-# CHECKS = [
-#     ("1. FEATURE BANDITE — simboli che non devono tornare", check_banned),
-#     ("2. IDENTIFICATORI  — cio' che i doc citano esiste ancora", check_identifiers),
-#     ("3. EVIDENZA        — verificato/dedotto/assunto", check_evidence),
-#     ("4. LINK E ANCORE   — i rimandi risolvono", check_links),
-#     ("5. FRESCHEZZA      — status.md rispetto al codice", check_freshness),
-# ]
-#
-#
-# def main():
-#     quiet = "--quiet" in sys.argv
-#     rep = Report(quiet=quiet)
-#     if not quiet:
-#         print("=" * 74)
-#         print("docs_lint — la documentazione per agenti dice ancora il vero?")
-#         print("=" * 74)
-#     for title, fn in CHECKS:
-#         rep.note("")
-#         rep.note(title)
-#         try:
-#             fn(rep)
-#         except Exception as exc:                      # fail-open sul singolo controllo
-#             rep.warn("INTERNO", f"{title.split('—')[0].strip()}: {type(exc).__name__}: {exc}")
-#
-#     print()
-#     print("=" * 74)
-#     if rep.errors:
-#         print(f"ERRORI: {len(rep.errors)}")
-#         for check, msg in rep.errors:
-#             print(f"  [{check}] {msg}")
-#     if rep.warns:
-#         print(f"AVVISI: {len(rep.warns)}")
-#         for check, msg in rep.warns:
-#             print(f"  [{check}] {msg}")
-#     if not rep.errors and not rep.warns:
-#         print("Tutto a posto.")
-#     elif not rep.errors:
-#         print("Nessun errore. Gli avvisi non fanno fallire il controllo.")
-#     print("=" * 74)
-#     return 1 if rep.errors else 0
-#
-#
-# if __name__ == "__main__":
-#     sys.exit(main())
-#
 # ---- AGENT-CONTEXT-FILE: .claude/hooks/hooklib.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
 # """
-# hooklib — la parte comune dei due hook. Python, non shell, perche' deve girare
-# uguale su Windows e su macOS: una sola implementazione, nessuna copia da tenere
-# allineata.
+# hooklib — la parte comune agli hook di Claude Code. Python, non shell, perche' deve
+# girare uguale su ogni sistema operativo.
 #
-# =============================================================================
-# Costanti del progetto. Su un repo nuovo le scrive `agent_context_init.py`
-# rilevandole da `git ls-files`: vanno guardate, e corrette solo se ha sbagliato.
-# =============================================================================
+# Qui non c'e' niente di specifico del progetto. Dove sta il codice lo rileva
+# scripts/context_core.py a ogni esecuzione, lo stesso modulo che usa il lint: hook e
+# lint rispondono sempre allo stesso modo alla domanda "e' cambiato il codice?".
+#
+# Se context_core non si trova, `core` resta None e gli hook tacciono: sono fail-open.
 # """
 #
-# # ==== TARATURA DEL PROGETTO (inizio) ====
-# # Le directory il cui cambiamento richiede che lo stato del lavoro venga aggiornato.
-# # RILEVATE dall'inizializzatore guardando questo repo. Correggile se ha sbagliato.
-# CODE_PATHS = ["src"]
-#
-# # Il documento che tiene lo stato corrente del lavoro.
-# STATUS_FILE = "docs/context/status.md"
-#
-# # La directory dei documenti di contesto, per il cruscotto dei livelli di evidenza.
-# CONTEXT_DIR = "docs/context"
-#
-# # I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
-# EVIDENCE_LEVELS = ["verificato", "dedotto", "assunto"]
-# # ==== TARATURA DEL PROGETTO (fine) ====
-#
-# # =============================================================================
-# # Da qui in giu' non c'e' niente di specifico del progetto.
-# # =============================================================================
-#
 # import io
-# import os
-# import re
-# import subprocess
 # import sys
 # from datetime import datetime
 # from pathlib import Path
-#
-# MARKER_RE = re.compile(r"<!--\s*context-verified-at:\s*([0-9a-f]{7,40})\s*-->")
-# # I marcatori devono stare DA SOLI sulla loro riga: senza le ancore di riga, la
-# # regex cattura anche il paragrafo che spiega i marcatori citandoli in linea.
-# BLOCK_RE = re.compile(
-#     r"^[ \t]*<!--\s*session-start:\s*begin\s*-->[ \t]*$"
-#     r"(.*?)"
-#     r"^[ \t]*<!--\s*session-start:\s*end\s*-->[ \t]*$",
-#     re.S | re.M)
+# import subprocess
 #
 #
 # def setup_stdout() -> None:
@@ -1542,16 +1027,7 @@ if __name__ == "__main__":
 #         pass
 #
 #
-# def run_git(root, *args) -> str:
-#     try:
-#         r = subprocess.run(["git", *args], capture_output=True, text=True,
-#                            encoding="utf-8", errors="replace", cwd=str(root))
-#         return r.stdout if r.returncode == 0 else ""
-#     except OSError:
-#         return ""
-#
-#
-# def repo_root():
+# def _root_via_git():
 #     try:
 #         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
 #                            capture_output=True, text=True, encoding="utf-8",
@@ -1563,12 +1039,21 @@ if __name__ == "__main__":
 #     return None
 #
 #
-# def git_dir(root):
-#     out = run_git(root, "rev-parse", "--git-dir").strip()
-#     if not out:
+# def _load_core():
+#     root = _root_via_git()
+#     if root is None:
 #         return None
-#     p = Path(out)
-#     return p if p.is_absolute() else (root / p)
+#     # Importare context_core non deve lasciare __pycache__ nel repository.
+#     sys.dont_write_bytecode = True
+#     sys.path.insert(0, str(root / "scripts"))
+#     try:
+#         import context_core
+#         return context_core
+#     except Exception:
+#         return None
+#
+#
+# core = _load_core()
 #
 #
 # def log(event: str, outcome: str) -> None:
@@ -1579,52 +1064,17 @@ if __name__ == "__main__":
 #     sono indistinguibili. Si scrivono anche gli esiti silenziosi, per lo stesso motivo.
 #     """
 #     try:
-#         root = repo_root()
+#         root = _root_via_git()
 #         if root is None:
 #             return
-#         g = git_dir(root)
-#         if g is None:
+#         g = core.git_dir(root) if core else root / ".git"
+#         if g is None or not g.is_dir():
 #             return
 #         line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {event:<13} {outcome}\n"
 #         with open(g / "claude-hooks.log", "a", encoding="utf-8") as fh:
 #             fh.write(line)
 #     except Exception:
 #         pass
-#
-#
-# def read_marker(status_text: str):
-#     m = MARKER_RE.search(status_text)
-#     return m.group(1) if m else None
-#
-#
-# def extract_marked(status_text: str):
-#     """
-#     Le sezioni da iniettare le dichiara il documento, con
-#     <!-- session-start: begin --> ... <!-- session-start: end -->.
-#     Cosi' l'hook non sa niente della numerazione delle sezioni, che cambia da progetto
-#     a progetto e drifta dentro lo stesso progetto.
-#     """
-#     return [m.group(1).strip() for m in BLOCK_RE.finditer(status_text) if m.group(1).strip()]
-#
-#
-# def count_levels(root) -> dict:
-#     counts = {lvl: 0 for lvl in EVIDENCE_LEVELS}
-#     ctx = root / CONTEXT_DIR
-#     if not ctx.is_dir():
-#         return counts
-#     for p in sorted(ctx.glob("*.md")):
-#         try:
-#             text = p.read_text(encoding="utf-8", errors="replace")
-#         except OSError:
-#             continue
-#         for lvl in EVIDENCE_LEVELS:
-#             counts[lvl] += len(re.findall(r"\*\*" + re.escape(lvl) + r"\*\*", text))
-#     return counts
-#
-#
-# def dirty(root, paths) -> str:
-#     """Modifiche non committate sotto i percorsi dati (stringa vuota = pulito)."""
-#     return run_git(root, "status", "--porcelain", "--", *paths).strip()
 #
 # ---- AGENT-CONTEXT-FILE: .claude/hooks/session_start.py ----
 # #!/usr/bin/env python3
@@ -1646,25 +1096,32 @@ if __name__ == "__main__":
 #
 # import sys
 #
-# from hooklib import (
-#     CODE_PATHS, STATUS_FILE, count_levels, dirty, extract_marked,
-#     log, read_marker, repo_root, run_git, setup_stdout,
-# )
+# # Importare hooklib non deve lasciare __pycache__ nel repository.
+# sys.dont_write_bytecode = True
+#
+# from hooklib import core, log, setup_stdout
 #
 # setup_stdout()
 #
 #
 # def main() -> int:
-#     root = repo_root()
+#     if core is None:
+#         log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
+#         return 0
+#     root = core.repo_root()
 #     if root is None:
 #         return 0
 #
+#     STATUS_FILE = core.STATUS_FILE
 #     status_path = root / STATUS_FILE
 #     if not status_path.is_file():
 #         log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
 #         return 0
 #
 #     status = status_path.read_text(encoding="utf-8", errors="replace")
+#     cfg, _ = core.load_config(root)
+#     specs, labels = core.code_scope(root, cfg)
+#     where = ", ".join(labels)
 #
 #     out = [
 #         "=== Stato del progetto (iniettato da .claude/hooks/session_start.py) ===",
@@ -1673,7 +1130,7 @@ if __name__ == "__main__":
 #     ]
 #
 #     # --- Le sezioni che il documento stesso dichiara volatili ---
-#     blocks = extract_marked(status)
+#     blocks = core.extract_marked(status)
 #     if blocks:
 #         out.append("\n\n".join(blocks))
 #         out.append("")
@@ -1683,29 +1140,27 @@ if __name__ == "__main__":
 #         out.append("")
 #
 #     # --- Cruscotto dei livelli di evidenza ---
-#     levels = count_levels(root)
+#     levels = core.count_levels(root)
 #     out.append("Evidenza nei documenti di contesto: " +
 #                "  ".join(f"{k}={v}" for k, v in levels.items()))
 #
 #     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
-#     sha = read_marker(status)
+#     sha = core.read_marker(status)
 #     if sha:
-#         since = run_git(root, "log", "--oneline", f"{sha}..HEAD", "--", *CODE_PATHS)
-#         if since:
-#             n = len(since.splitlines())
-#             out.append(f"ATTENZIONE: {n} commit hanno toccato {'/, '.join(CODE_PATHS)}/ "
+#         ok, since = core.commits_since(root, sha, specs)
+#         if ok and since:
+#             out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
 #                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
 #                        f"riconciliato. Potrebbe dire cose non piu' vere.")
-#     else:
+#     elif core.head_sha(root) is not None:
 #         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
 #                    f"la sua freschezza non e' misurabile.")
 #
 #     # --- Lavoro non registrato rimasto da una sessione precedente ---
-#     if dirty(root, CODE_PATHS) and not dirty(root, [STATUS_FILE]):
-#         out.append(f"ATTENZIONE: ci sono modifiche non committate sotto "
-#                    f"{'/, '.join(CODE_PATHS)}/ e {STATUS_FILE} e' intatto. Probabile "
-#                    f"lavoro di una sessione precedente mai registrato: valuta se va "
-#                    f"annotato.")
+#     if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
+#         out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
+#                    f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
+#                    f"precedente mai registrato: valuta se va annotato.")
 #
 #     out += ["", "Verifica che i documenti dicano ancora il vero: "
 #                 "python scripts/docs_lint.py",
@@ -1751,10 +1206,10 @@ if __name__ == "__main__":
 # import re
 # import sys
 #
-# from hooklib import (
-#     CODE_PATHS, STATUS_FILE, dirty, git_dir, log, read_marker, repo_root,
-#     run_git, setup_stdout,
-# )
+# # Importare hooklib non deve lasciare __pycache__ nel repository.
+# sys.dont_write_bytecode = True
+#
+# from hooklib import core, log, setup_stdout
 #
 # setup_stdout()
 #
@@ -1786,38 +1241,48 @@ if __name__ == "__main__":
 #
 # def main() -> int:
 #     sid = session_id()
-#     root = repo_root()
+#     if core is None:
+#         log("Stop", "scripts/context_core.py non trovato: nessun controllo")
+#         return 0
+#     root = core.repo_root()
 #     if root is None:
 #         return 0
-#     g = git_dir(root)
+#     g = core.git_dir(root)
 #     if g is None:
 #         return 0
 #
+#     STATUS_FILE = core.STATUS_FILE
 #     safe = re.sub(r"[^A-Za-z0-9_-]", "", sid) or "ignota"
 #     flag = g / f"docs-status-nag-{safe}.flag"
 #     if flag.exists():
 #         log("Stop", "ok (gia' segnalato in questa sessione)")
 #         return 0
 #
-#     if dirty(root, [STATUS_FILE]):
+#     if core.dirty(root, [STATUS_FILE]):
 #         log("Stop", f"ok ({STATUS_FILE} gia' toccato)")
 #         return 0
 #
+#     cfg, _ = core.load_config(root)
+#     specs, labels = core.code_scope(root, cfg)
+#     if not specs:
+#         log("Stop", "ok (nessun codice nel repository, per ora)")
+#         return 0
+#     where = ", ".join(labels)
+#
 #     reasons = []
 #
-#     changed = dirty(root, CODE_PATHS)
+#     changed = core.dirty(root, specs)
 #     if changed:
 #         files = ", ".join(re.sub(r"^\s*\S+\s+", "", l) for l in changed.splitlines())
 #         reasons.append(f"modifiche non committate: {files}")
 #
 #     status_path = root / STATUS_FILE
 #     if status_path.is_file():
-#         sha = read_marker(status_path.read_text(encoding="utf-8", errors="replace"))
+#         sha = core.read_marker(status_path.read_text(encoding="utf-8", errors="replace"))
 #         if sha:
-#             since = run_git(root, "log", "--oneline", f"{sha}..HEAD", "--", *CODE_PATHS)
-#             if since.strip():
-#                 n = len(since.strip().splitlines())
-#                 reasons.append(f"{n} commit su {'/, '.join(CODE_PATHS)}/ dopo {sha}, "
+#             ok, since = core.commits_since(root, sha, specs)
+#             if ok and since:
+#                 reasons.append(f"{len(since)} commit sul codice ({where}) dopo {sha}, "
 #                                f"il punto a cui {STATUS_FILE} dichiara di essere "
 #                                f"riconciliato")
 #
@@ -2387,4 +1852,852 @@ if __name__ == "__main__":
 # Infine, la regola che tiene in piedi il livello che esegue: **il lint va fatto girare prima
 # di dichiarare concluso qualcosa**, e quando trova qualcosa si corregge il documento, non si
 # allarga l'eccezione.
+#
+# ---- AGENT-CONTEXT-FILE: docs/context/config.toml ----
+# # Configurazione del contesto per agenti.
+# #
+# # Questo file e' TUO. L'inizializzatore lo crea se manca e non lo sovrascrive mai,
+# # nemmeno con --force: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
+# # script non deve cancellarla.
+# #
+# # Dove sta il codice NON si scrive qui. Il lint e gli hook lo rilevano a ogni
+# # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
+# # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
+# # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
+# #     python scripts/docs_lint.py
+# # Qui si correggono solo gli errori di quella rilevazione.
+#
+# [code]
+# # Percorsi, relativi alla radice, da considerare codice anche se la rilevazione li
+# # scarta: una directory che inizia con un punto, file senza estensione riconosciuta.
+# include = []
+# # Percorsi da NON considerare codice anche se la rilevazione li prende: codice
+# # generato, copie di librerie esterne.
+# exclude = []
+#
+# # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
+# # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
+# # motivo non si aggiunge niente, o in sei mesi queste liste sono una discarica che
+# # silenzia anche i controlli veri.
+#
+# [lint.not_symbols]
+# # Parole fra backtick nei documenti che sembrano identificatori ma sono prosa, unita' di
+# # misura o nomi esterni. Il confronto ignora maiuscole e minuscole.
+# # "parola" = "perche' non e' un simbolo"
+#
+# [lint.expected_absent]
+# # Nomi citati nei documenti che NON devono esistere nel codice, per costruzione: un
+# # identificatore ritirato, un modulo rimosso, il nome di un altro repository.
+# # "NOME_RITIRATO" = "perche' non deve esistere"
+#
+# [lint.external_symbols]
+# # Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
+# # Una chiave che finisce con "/" vale come prefisso di percorso.
+# # "API_DELLA_LIBRERIA" = "di quale libreria, e perche' e' citata"
+#
+# [lint.received_docs]
+# # Documenti ricevuti da terzi e conservati verbatim: il lint non ne controlla i link,
+# # che puntano nel workspace di chi li ha scritti. Si indicano per nome di file.
+# # "nome-file.md" = "da chi, e perche' e' conservato cosi'"
+#
+# ---- AGENT-CONTEXT-FILE: scripts/context_core.py ----
+# #!/usr/bin/env python3
+# # -*- coding: utf-8 -*-
+# """
+# context_core — la parte comune al lint dei documenti e agli hook degli agenti.
+#
+# Risponde a tre domande, sempre nello stesso modo per chiunque le faccia:
+#
+#   - dove sta il codice di questo repository;
+#   - cosa dice la configurazione scritta a mano (docs/context/config.toml);
+#   - a che commit status.md dichiara di essere riconciliato, e cosa e' cambiato da allora.
+#
+# Dove sta il codice NON e' scritto da nessuna parte: si rileva a ogni esecuzione dai file
+# che git conosce, tracciati e nuovi non ignorati. Una costante scritta una volta sola
+# diventa falsa appena il progetto cresce o si riorganizza, e nessuno se ne accorge: un
+# repository nato vuoto restava sorvegliato su una cartella `src` che non esisteva.
+#
+# Nessuna dipendenza fuori dalla libreria standard. Non stampa niente e non esce: decide
+# chi lo importa cosa fare degli errori.
+# """
+#
+# import re
+# import subprocess
+# import tomllib
+# from pathlib import Path
+#
+# CONTEXT_DIR = "docs/context"
+# STATUS_FILE = "docs/context/status.md"
+# CONFIG_FILE = "docs/context/config.toml"
+#
+# # I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
+# EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
+#
+# # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
+# # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
+# # i nomi che il lint cerca.
+# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py"}
+# # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
+# MANAGED_NAMES = {"agent_context_init.py"}
+#
+# # Estensioni che non sono codice: documenti, media, archivi, binari, dati.
+# NON_SOURCE_SUFFIXES = {
+#     ".md", ".rst", ".adoc", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+#     ".webp", ".bmp", ".tiff", ".mp3", ".mp4", ".wav", ".zip", ".gz", ".tar", ".7z",
+#     ".bin", ".hex", ".elf", ".exe", ".dll", ".so", ".dylib", ".lock", ".log", ".csv",
+#     ".pem", ".der", ".crt", ".key",
+#     ".ttf", ".otf", ".woff", ".woff2", ".eot", ".wasm", ".jar", ".class",
+#     ".o", ".a", ".obj", ".lib", ".pyc", ".pyo", ".db", ".sqlite", ".sqlite3",
+#     # Testo libero: note, versioni, output salvati. I .txt che sono codice si
+#     # riconoscono per nome, qui sotto.
+#     ".txt",
+# }
+#
+# # File che sono codice pur senza un'estensione riconoscibile come tale.
+# SOURCE_NAMES = {
+#     "CMakeLists.txt", "Makefile", "makefile", "GNUmakefile", "Dockerfile",
+#     "Containerfile", "Kconfig", "Jenkinsfile", "Rakefile", "Gemfile", "Vagrantfile",
+#     "Procfile", "requirements.txt", "constraints.txt",
+# }
+#
+# # Directory che non contengono codice del progetto, per quanto piene di file.
+# NON_SOURCE_DIRS = {
+#     "docs", "doc", "build", "dist", "out", "target", "node_modules", "vendor",
+#     "third_party", "external", "__pycache__", "venv", "site-packages",
+# }
+#
+# MARKER_RE = re.compile(r"<!--\s*context-verified-at:\s*([0-9a-f]{7,40})\s*-->")
+# # I marcatori devono stare DA SOLI sulla loro riga: senza le ancore di riga, la regex
+# # cattura anche il paragrafo che spiega i marcatori citandoli in linea.
+# BLOCK_RE = re.compile(
+#     r"^[ \t]*<!--\s*session-start:\s*begin\s*-->[ \t]*$"
+#     r"(.*?)"
+#     r"^[ \t]*<!--\s*session-start:\s*end\s*-->[ \t]*$",
+#     re.S | re.M)
+#
+#
+# # ------------------------------------------------------------------------------ git
+#
+# def run_git(root, *args):
+#     """(riuscito, stdout). Un git assente o rotto vale come comando fallito."""
+#     try:
+#         r = subprocess.run(["git", *args], capture_output=True, text=True,
+#                            encoding="utf-8", errors="replace",
+#                            cwd=str(root) if root else None)
+#         return r.returncode == 0, r.stdout
+#     except OSError:
+#         return False, ""
+#
+#
+# def repo_root(start=None):
+#     ok, out = run_git(start, "rev-parse", "--show-toplevel")
+#     return Path(out.strip()) if ok and out.strip() else None
+#
+#
+# def git_dir(root):
+#     ok, out = run_git(root, "rev-parse", "--git-dir")
+#     if not ok or not out.strip():
+#         return None
+#     p = Path(out.strip())
+#     return p if p.is_absolute() else (root / p)
+#
+#
+# def head_sha(root):
+#     """Lo sha corto di HEAD, o None se il repository non ha ancora un commit."""
+#     ok, out = run_git(root, "rev-parse", "--short", "HEAD")
+#     sha = out.strip()
+#     return sha if ok and re.fullmatch(r"[0-9a-f]{7,40}", sha) else None
+#
+#
+# # ---------------------------------------------------------------------- configurazione
+#
+# def load_config(root):
+#     """
+#     (configurazione, errore). Un file assente e' normale e vale come vuoto. Un file
+#     malformato NON vale come vuoto in silenzio: l'errore torna a chi chiama, perche'
+#     liste di eccezioni perse di colpo fanno sembrare rotti i documenti.
+#     """
+#     p = Path(root) / CONFIG_FILE
+#     if not p.is_file():
+#         return {}, None
+#     try:
+#         with open(p, "rb") as fh:
+#             return tomllib.load(fh), None
+#     except (OSError, tomllib.TOMLDecodeError) as exc:
+#         return {}, f"{CONFIG_FILE} non e' TOML valido: {exc}"
+#
+#
+# def config_table(cfg, *keys) -> dict:
+#     """Una tabella annidata della configurazione, o {} se manca o ha la forma sbagliata."""
+#     cur = cfg
+#     for k in keys:
+#         cur = cur.get(k) if isinstance(cur, dict) else None
+#     return cur if isinstance(cur, dict) else {}
+#
+#
+# def _prefixes(cfg, key):
+#     vals = config_table(cfg, "code").get(key, [])
+#     if not isinstance(vals, list):
+#         return []
+#     return [str(v).strip().replace("\\", "/").strip("/") for v in vals if str(v).strip()]
+#
+#
+# def _under(rel, prefixes):
+#     return any(rel == p or rel.startswith(p + "/") for p in prefixes)
+#
+#
+# # ---------------------------------------------------------------------- dove sta il codice
+#
+# def known_files(root):
+#     """
+#     I file che git conosce: tracciati, e nuovi purche' non ignorati. I nuovi contano,
+#     perche' una cartella appena creata e' gia' codice prima del primo `git add`.
+#     """
+#     ok, out = run_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+#     if not ok:
+#         return []
+#     return sorted({f for f in out.split("\0") if f})
+#
+#
+# def _is_managed(rel):
+#     return rel in MANAGED_FILES or rel.rsplit("/", 1)[-1] in MANAGED_NAMES
+#
+#
+# def _has_source_suffix(rel):
+#     name = rel.rsplit("/", 1)[-1]
+#     if name in SOURCE_NAMES or name.startswith("Kconfig."):
+#         return True
+#     suf = Path(name).suffix.lower()
+#     return bool(suf) and suf not in NON_SOURCE_SUFFIXES
+#
+#
+# def code_files(root, cfg):
+#     """
+#     Il codice del progetto: cio' che, se cambia, puo' rendere falsi i documenti.
+#
+#     Fuori: documenti e binari, directory di build e dipendenze, directory che iniziano
+#     con un punto (configurazione di strumenti: .github, .vscode, .claude...), e i file
+#     di questo impianto. `[code] include` e `[code] exclude` correggono la regola.
+#     """
+#     include, exclude = _prefixes(cfg, "include"), _prefixes(cfg, "exclude")
+#     out = []
+#     for rel in known_files(root):
+#         if _under(rel, exclude):
+#             continue
+#         if _under(rel, include):
+#             out.append(rel)
+#             continue
+#         dirs = rel.split("/")[:-1]
+#         if any(d in NON_SOURCE_DIRS or d.startswith(".") for d in dirs):
+#             continue
+#         if _is_managed(rel) or not _has_source_suffix(rel):
+#             continue
+#         out.append(rel)
+#     return out
+#
+#
+# def tree_files(root, cfg):
+#     """
+#     Dove un simbolo citato nei documenti puo' legittimamente vivere. E' piu' largo del
+#     codice: comprende le directory di configurazione degli strumenti e i file di questo
+#     impianto, che i documenti citano anche loro.
+#     """
+#     exclude = _prefixes(cfg, "exclude")
+#     out = []
+#     for rel in known_files(root):
+#         if _under(rel, exclude):
+#             continue
+#         dirs = rel.split("/")[:-1]
+#         if any(d in NON_SOURCE_DIRS or d == ".git" for d in dirs):
+#             continue
+#         if _has_source_suffix(rel):
+#             out.append(rel)
+#     return out
+#
+#
+# def code_scope(root, cfg):
+#     """
+#     (pathspec per git, etichette leggibili). Le pathspec servono a `git log` e
+#     `git status` per chiedere "e' cambiato il codice?" senza elencare mille file.
+#
+#     Lista vuota = nessun codice ancora. Chi chiama deve saltare il controllo: una
+#     pathspec vuota, per git, vuol dire TUTTO il repository.
+#     """
+#     include = _prefixes(cfg, "include")
+#     tops = []
+#     for rel in code_files(root, cfg):
+#         # Un percorso incluso a mano si sorveglia per quello che e', non allargato alla
+#         # sua directory di primo livello: `.github/workflows` non e' tutto `.github`.
+#         top = next((p for p in include if _under(rel, [p])), None)
+#         if top is None:
+#             top = rel.split("/", 1)[0] if "/" in rel else rel
+#         if top not in tops:
+#             tops.append(top)
+#     if not tops:
+#         return [], []
+#     specs = list(tops)
+#     specs += [f":(exclude){m}" for m in sorted(MANAGED_FILES)]
+#     specs += [f":(exclude,glob)**/{n}" for n in sorted(MANAGED_NAMES)]
+#     specs += [f":(exclude){e}" for e in _prefixes(cfg, "exclude")]
+#     specs += [f":(exclude,glob)**/*{s}" for s in sorted(NON_SOURCE_SUFFIXES)]
+#     labels = [t + "/" if (Path(root) / t).is_dir() else t for t in tops]
+#     return specs, labels
+#
+#
+# def commits_since(root, sha, specs):
+#     """(marcatore valido?, righe di log dei commit che hanno toccato il codice)."""
+#     if not specs:
+#         return True, []
+#     ok, out = run_git(root, "log", "--oneline", f"{sha}..HEAD", "--", *specs)
+#     return ok, [l for l in out.splitlines() if l.strip()]
+#
+#
+# def dirty(root, specs) -> str:
+#     """Modifiche non committate sotto le pathspec date (stringa vuota = pulito)."""
+#     if not specs:
+#         return ""
+#     return run_git(root, "status", "--porcelain", "--", *specs)[1].strip()
+#
+#
+# # ---------------------------------------------------------------------- documento di stato
+#
+# def read_marker(status_text):
+#     m = MARKER_RE.search(status_text)
+#     return m.group(1) if m else None
+#
+#
+# def extract_marked(status_text):
+#     """
+#     Le sezioni da iniettare le dichiara il documento, con
+#     <!-- session-start: begin --> ... <!-- session-start: end -->.
+#     Cosi' chi le inietta non sa niente della numerazione delle sezioni.
+#     """
+#     return [m.group(1).strip() for m in BLOCK_RE.finditer(status_text) if m.group(1).strip()]
+#
+#
+# def count_levels(root) -> dict:
+#     counts = {lvl: 0 for lvl in EVIDENCE_LEVELS}
+#     ctx = Path(root) / CONTEXT_DIR
+#     if not ctx.is_dir():
+#         return counts
+#     for p in sorted(ctx.glob("*.md")):
+#         try:
+#             text = p.read_text(encoding="utf-8", errors="replace")
+#         except OSError:
+#             continue
+#         for lvl in EVIDENCE_LEVELS:
+#             counts[lvl] += len(re.findall(r"\*\*" + re.escape(lvl) + r"\*\*", text))
+#     return counts
+#
+# ---- AGENT-CONTEXT-FILE: scripts/docs_lint.py ----
+# #!/usr/bin/env python3
+# # -*- coding: utf-8 -*-
+# """
+# docs_lint — controlla che la documentazione per agenti dica ancora il vero.
+#
+# Non guarda il prodotto: guarda i documenti che lo descrivono.
+#
+# Cinque controlli:
+#
+#   1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
+#                         ricomparsi nel codice. La lista NON e' scritta qui: viene
+#                         letta dal documento, che resta l'unica fonte.
+#   2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/context/
+#                         esiste ancora nell'albero. E' il controllo che intercetta
+#                         una rinomina fatta senza aggiornare i documenti.
+#   3. EVIDENZA         — in docs/context/ ogni "verificato" porta una data, e il
+#                         lessico conversazionale ([Certo]/[Probabile]/[Ipotesi]) non
+#                         entra nei documenti. Stampa il cruscotto dei tre livelli.
+#   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
+#   5. FRESCHEZZA       — quanti commit hanno toccato il codice dopo il punto in cui
+#                         status.md dichiara di essere riconciliato.
+#
+# Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
+# esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
+#
+# Uso:   python scripts/docs_lint.py [--quiet]
+# Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
+# """
+#
+# import io
+# import re
+# import sys
+# from pathlib import Path
+#
+# if hasattr(sys.stdout, "buffer"):
+#     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+#
+# # Importare context_core non deve lasciare __pycache__ nel repository.
+# sys.dont_write_bytecode = True
+# sys.path.insert(0, str(Path(__file__).resolve().parent))
+# import context_core as core  # noqa: E402
+#
+# # --------------------------------------------------------------------------- setup
+#
+# ROOT = core.repo_root() or Path(__file__).resolve().parent.parent
+# CONTEXT = ROOT / core.CONTEXT_DIR
+# CONFIG, CONFIG_ERROR = core.load_config(ROOT)
+#
+# EXPECTED_ABSENT = core.config_table(CONFIG, "lint", "expected_absent")
+# EXTERNAL_SYMBOLS = core.config_table(CONFIG, "lint", "external_symbols")
+# RECEIVED_DOCS = core.config_table(CONFIG, "lint", "received_docs")
+#
+# # Parole che sembrano identificatori ma sono prosa. Qui c'e' solo il nucleo indipendente
+# # dal progetto; il resto sta in [lint.not_symbols] della configurazione.
+# NOT_SYMBOLS_CORE = {
+#     "true", "false", "null", "none", "void", "main", "data", "text", "info",
+#     "test", "build", "error", "warning", "debug", "http", "https", "json", "yaml",
+#     "toml", "git", "origin", "HEAD", "grep", "python", "node", "docker",
+#     "feat", "fix", "docs", "chore", "refactor", "style", "perf",
+#     # Parole usate dallo scheletro di status.md: senza, il primo giro del lint
+#     # segnala il file che l'inizializzatore ha appena scritto.
+#     "esito", "chi", "prova", "corrente", "regola", "dove", "livello", "nota",
+#     "head", "cronologia", "stato", "lavoro", "commit",
+#     "verificato", "dedotto", "assunto",
+# }
+# # Il confronto avviene sul token gia' abbassato a minuscolo: una voce in maiuscolo non
+# # combacerebbe mai, e il difetto resterebbe invisibile. Si normalizza qui, una volta.
+# NOT_SYMBOLS = {w.lower() for w in NOT_SYMBOLS_CORE | set(
+#     core.config_table(CONFIG, "lint", "not_symbols"))}
+#
+# # Directory da non attraversare quando si cerca un file citato per nome.
+# SKIP_DIRS = core.NON_SOURCE_DIRS - {"docs", "doc"} | {".git"}
+#
+# # Fuga esplicita per il caso legittimo: una riga che PARLA della convenzione invece di
+# # applicarla. Va scritta in chiaro nel documento, cosi' si vede e si puo' cercare.
+# IGNORE_MARK = "<!-- docs-lint: ignore -->"
+#
+# # Un token che ha questa forma non e' un simbolo del codice: e' un riferimento git.
+# GITREF_RE = re.compile(r"^(?:[0-9a-f]{7,40}|origin/[\w./-]+|feature/[\w./-]+|refs/[\w./-]+)$")
+#
+#
+# def read(p: Path) -> str:
+#     try:
+#         return p.read_text(encoding="utf-8")
+#     except (OSError, UnicodeDecodeError):
+#         return ""
+#
+#
+# def strip_fences(text: str) -> str:
+#     """Azzera i blocchi di codice recintati, tenendo la numerazione delle righe."""
+#     out, inside = [], False
+#     for line in text.split("\n"):
+#         if line.lstrip().startswith("```"):
+#             inside = not inside
+#             out.append("")
+#             continue
+#         out.append("" if inside else line)
+#     return "\n".join(out)
+#
+#
+# def tracked_files():
+#     """Solo i file versionati: un documento di appunti non tracciato non fa fallire."""
+#     ok, out = core.run_git(ROOT, "ls-files")
+#     if not ok:
+#         return None
+#     return {(ROOT / line).resolve() for line in out.splitlines() if line.strip()}
+#
+#
+# CODE_BLOB = None
+#
+# def code_blob() -> str:
+#     global CODE_BLOB
+#     if CODE_BLOB is None:
+#         CODE_BLOB = "\n".join(read(ROOT / rel) for rel in core.tree_files(ROOT, CONFIG))
+#     return CODE_BLOB
+#
+#
+# def context_files():
+#     return sorted(CONTEXT.glob("*.md")) if CONTEXT.is_dir() else []
+#
+#
+# class Report:
+#     def __init__(self, quiet=False):
+#         self.errors = []
+#         self.warns = []
+#         self.quiet = quiet
+#
+#     def error(self, check, msg):
+#         self.errors.append((check, msg))
+#
+#     def warn(self, check, msg):
+#         self.warns.append((check, msg))
+#
+#     def note(self, msg):
+#         if not self.quiet:
+#             print(msg)
+#
+#
+# # ---------------------------------------------------------------- 0. configurazione
+#
+# def check_config(rep: Report):
+#     if CONFIG_ERROR:
+#         rep.error("CONFIG", CONFIG_ERROR + " — le eccezioni scritte li' sono ignorate")
+#     files = core.code_files(ROOT, CONFIG)
+#     _, labels = core.code_scope(ROOT, CONFIG)
+#     if labels:
+#         shown = ", ".join(labels[:12]) + (" …" if len(labels) > 12 else "")
+#         rep.note(f"  codice rilevato: {len(files)} file in {shown}")
+#     else:
+#         rep.note("  codice rilevato: nessuno, per ora. I controlli sul codice restano "
+#                  "inattivi finche' non ce n'e'.")
+#
+#
+# # ------------------------------------------------------------ 1. feature bandite
+#
+# def check_banned(rep: Report):
+#     """La lista dei simboli banditi vive in invariants.md, non qui."""
+#     inv = CONTEXT / "invariants.md"
+#     if not inv.is_file():
+#         # Progetto appena inizializzato: gli invarianti non sono ancora stati scritti.
+#         # E' un lavoro da fare, non un guasto.
+#         rep.warn("BANDITE", "docs/context/invariants.md non esiste ancora: "
+#                             "il controllo 1 e' inattivo finche' non c'e'")
+#         return
+#     text = read(inv)
+#     if not text:
+#         rep.error("BANDITE", "docs/context/invariants.md esiste ma non e' leggibile")
+#         return
+#
+#     m = re.search(r"##\s*Feature bandite\s*\n(.*?)(?=\n##\s|\Z)", text, re.S)
+#     if not m:
+#         # Un progetto puo' legittimamente non avere niente di bandito: e' un avviso,
+#         # non un errore. Errore lo diventa solo se la sezione c'e' ed e' malformata.
+#         rep.warn("BANDITE", "nessuna sezione '## Feature bandite' in invariants.md: "
+#                             "il controllo 1 e' inattivo. Se il progetto ha cose che non "
+#                             "devono tornare, dichiararle li' le rende verificabili")
+#         return
+#
+#     para = re.search(r"Nessun riferimento nel codice a:(.*?)(?:\n\s*\n|\n\||\Z)",
+#                      m.group(1), re.S)
+#     if not para:
+#         rep.error("BANDITE", "il paragrafo 'Nessun riferimento nel codice a:' non ha piu' "
+#                              "la forma attesa: aggiorna docs_lint.py o il documento")
+#         return
+#
+#     tokens = re.findall(r"`([^`]+)`", para.group(1))
+#     if not tokens:
+#         rep.error("BANDITE", "nessun simbolo bandito estratto dal paragrafo")
+#         return
+#
+#     # Il codice del progetto, senza i file di questo impianto: il lint e l'inizializzatore
+#     # contengono i nomi banditi per poterli cercare, e si accuserebbero da soli.
+#     files = [ROOT / rel for rel in core.code_files(ROOT, CONFIG)]
+#     hits = 0
+#     for tok in tokens:
+#         # Confine a sinistra: senza, `ff.h` trova `poweroff.h`. `*` diventa un glob.
+#         body = re.escape(tok).replace(r"\*", r"\w*")
+#         pattern = r"(?<![\w./])" + body
+#         found = [p for p in files if re.search(pattern, read(p), re.I)]
+#         if found:
+#             hits += 1
+#             where = ", ".join(str(p.relative_to(ROOT)) for p in found[:4])
+#             rep.error("BANDITE", f"`{tok}` e' ricomparso nel codice: {where}")
+#     rep.note(f"  simboli banditi controllati: {len(tokens)}  —  ricomparsi: {hits}")
+#
+#
+# # --------------------------------------------------------- 2. identificatori vivi
+#
+# # Un elenco chiuso di estensioni, non "qualunque cosa dopo un punto": altrimenti
+# # `sys.stdout` o `obj.field` diventerebbero percorsi inesistenti.
+# PATH_RE = re.compile(
+#     r"^[\w./\-]+\.(?:c|h|cc|cpp|hpp|cs|m|mm|swift|kt|java|py|rb|php|go|rs|js|jsx|ts|tsx"
+#     r"|vue|svelte|sh|ps1|sql|html|css|scss|json|toml|yml|yaml|ini|cfg|conf|xml|md|rst"
+#     r"|txt|cmake|dts|dtsi|overlay|pem|lock|env|gradle|csproj|sln)$")
+# IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{3,}$")
+#
+#
+# def path_exists_anywhere(rel: str) -> bool:
+#     """
+#     Un documento puo' citare un file per nome senza il percorso completo: `foo.md`
+#     che sta in docs/, mentre chi lo cita e' in docs/context/. Cercarlo solo dalla
+#     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
+#     sono il modo in cui un lint smette di essere letto. Regge anche i glob (`lib/*.h`).
+#     """
+#     if (ROOT / rel).exists():
+#         return True
+#     try:
+#         for hit in ROOT.glob("**/" + rel):
+#             if not any(part in SKIP_DIRS for part in hit.relative_to(ROOT).parts):
+#                 return True
+#     except (ValueError, OSError, IndexError, NotImplementedError):
+#         pass
+#     return False
+#
+#
+# def _is_prose(tok: str) -> bool:
+#     """Frammenti di comando, formule e frasi fra backtick non sono identificatori."""
+#     if " " in tok or "=" in tok or "(" in tok or "×" in tok or "@" in tok:
+#         return True
+#     # Segnaposto in un template: topic, rotta HTTP, nome di file parametrico.
+#     # `epic/{mac}/data` non e' un percorso che debba esistere sul disco.
+#     if "{" in tok or "}" in tok or "<" in tok or ">" in tok:
+#         return True
+#     # Unita' di misura: due segmenti, il secondo cortissimo e alfabetico — `m/s`,
+#     # `km/h`, `entry/s`. La soglia stretta sul secondo segmento evita di scambiare
+#     # per unita' una cartella vera come `epic/data`.
+#     seg = tok.split("/")
+#     if len(seg) == 2 and seg[0].isalpha() and seg[1].isalpha() and len(seg[1]) <= 3:
+#         return True
+#     if tok.startswith(("-", ".", "~", "#", "/")):
+#         return True
+#     if tok.startswith("build/"):
+#         return True
+#     # `Acq_TryClaim/Release/Current`: scorciatoia di prosa, non un percorso.
+#     if "/" in tok and not PATH_RE.match(tok):
+#         if any(seg[:1].isupper() for seg in tok.split("/") if seg):
+#             return True
+#     return False
+#
+#
+# def _is_external(tok: str, base: str) -> bool:
+#     if base in EXTERNAL_SYMBOLS:
+#         return True
+#     return any(k.endswith("/") and tok.startswith(k) for k in EXTERNAL_SYMBOLS)
+#
+#
+# def check_identifiers(rep: Report):
+#     tokens = {}
+#     for p in context_files():
+#         for m in re.finditer(r"`([^`\n]+)`", strip_fences(read(p))):
+#             tok = m.group(1).strip()
+#             tokens.setdefault(tok, set()).add(p)
+#
+#     checked = missing = skipped = 0
+#     for tok, where in sorted(tokens.items(), key=lambda kv: kv[0]):
+#         base = tok.rstrip("*/")
+#         names = ", ".join(sorted(p.name for p in where))
+#
+#         if (_is_prose(tok) or GITREF_RE.match(tok)
+#                 or tok.lower() in NOT_SYMBOLS or base.lower() in NOT_SYMBOLS
+#                 or _is_external(tok, base)
+#                 or any(k.rstrip("*") in tok for k in EXPECTED_ABSENT)):
+#             skipped += 1
+#             continue
+#
+#         if PATH_RE.match(tok) or "/" in tok:
+#             checked += 1
+#             rel = tok.rstrip("/")
+#             # Relativo a chi lo cita, poi ovunque nell'albero (glob compresi).
+#             if any((p.parent / rel).exists() for p in where) or path_exists_anywhere(rel):
+#                 continue
+#             missing += 1
+#             rep.error("IDENT", f"percorso `{tok}` non esiste  (citato in {names})")
+#             continue
+#
+#         if IDENT_RE.match(tok):
+#             checked += 1
+#             # Sottostringa, non parola intera: i documenti citano di proposito la coda
+#             # di un nome lungo (`INFO_ID_STREAM` per PACKET_INFO_ID_STREAM). E' la
+#             # regola dell'altitudine: il documento non ripete il prefisso.
+#             if base in code_blob():
+#                 continue
+#             missing += 1
+#             rep.error("IDENT", f"simbolo `{tok}` non esiste nel codice  (citato in {names})")
+#         else:
+#             skipped += 1
+#
+#     rep.note(f"  token controllati: {checked}  —  non trovati: {missing}  "
+#              f"—  ignorati (prosa o assenza voluta): {skipped}")
+#
+#
+# # ------------------------------------------------------------- 3. livelli evidenza
+#
+# LEVELS = core.EVIDENCE_LEVELS
+# DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# CONV_RE = re.compile(r"\[(Certo|Probabile|Ipotesi)\]")
+#
+#
+# def check_evidence(rep: Report):
+#     counts = {lvl: 0 for lvl in LEVELS}
+#     for p in context_files():
+#         text = strip_fences(read(p))
+#         in_legend = False
+#         for n, line in enumerate(text.split("\n"), 1):
+#             for lvl in LEVELS:
+#                 counts[lvl] += len(re.findall(r"\*\*" + lvl + r"\*\*", line))
+#
+#             # La sezione che DEFINISCE il lessico e' esente dal lessico che definisce.
+#             if re.match(r"^##\s", line):
+#                 in_legend = "livelli di evidenza" in line.lower()
+#             if in_legend or IGNORE_MARK in line:
+#                 continue
+#
+#             if re.search(r"\*\*verificato\*\*", line) and not DATE_RE.search(line):
+#                 rep.error("EVIDENZA",
+#                           f"{p.name}:{n} — '**verificato**' senza data: "
+#                           f"un verificato senza data non e' verificabile")
+#
+#             # collaboration.md e' il file che DEFINISCE il lessico conversazionale.
+#             m = CONV_RE.search(line)
+#             if m and p.name != "collaboration.md":
+#                 rep.error("EVIDENZA",
+#                           f"{p.name}:{n} — [{m.group(1)}] e' il lessico della "
+#                           f"conversazione: nei documenti si usa "
+#                           f"verificato/dedotto/assunto")
+#     rep.note("  cruscotto evidenza in docs/context/:  " +
+#              "  ".join(f"{lvl}={counts[lvl]}" for lvl in LEVELS))
+#     if counts["verificato"] == 0:
+#         rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/context/")
+#
+#
+# # ---------------------------------------------------------------- 4. link e ancore
+#
+# def slug(title: str) -> str:
+#     t = title.strip().lower()
+#     t = re.sub(r"`([^`]*)`", r"\1", t)
+#     t = re.sub(r"<[^>]+>", "", t)
+#     t = "".join(ch for ch in t if ch.isalnum() or ch in " -_")
+#     return t.replace(" ", "-")
+#
+#
+# LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+#
+#
+# def check_links(rep: Report):
+#     anchors = {}
+#     for p in ROOT.rglob("*.md"):
+#         if any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts):
+#             continue
+#         text = strip_fences(read(p))
+#         found = set()
+#         for line in text.split("\n"):
+#             m = re.match(r"^#{1,6}\s+(.*)$", line)
+#             if m:
+#                 found.add(slug(m.group(1)))
+#         for m in re.finditer(r'<a\s+id="([^"]+)"', text):
+#             found.add(m.group(1))
+#         anchors[p.resolve()] = found
+#
+#     # I file di ingresso degli agenti stanno nella radice e contengono quasi tutti i
+#     # link: si prendono tutti i .md della radice, non un elenco di nomi da aggiornare.
+#     targets = sorted(ROOT.glob("*.md"))
+#     targets += context_files() + sorted((ROOT / "docs").glob("*.md"))
+#     tracked = tracked_files()
+#
+#     checked = broken = skipped_untracked = skipped_received = 0
+#     for p in targets:
+#         if not p.is_file():
+#             continue
+#         # Un file di appunti non tracciato non deve far fallire il controllo.
+#         if tracked is not None and p.resolve() not in tracked and p not in context_files():
+#             skipped_untracked += 1
+#             continue
+#         # Un documento ricevuto non e' nostro da riparare: vedi [lint.received_docs].
+#         if p.name in RECEIVED_DOCS:
+#             skipped_received += 1
+#             continue
+#         for m in LINK_RE.finditer(strip_fences(read(p))):
+#             target = m.group(2).strip()
+#             if target.startswith(("http://", "https://", "mailto:", "#!")):
+#                 continue
+#             path, _, anchor = target.partition("#")
+#             checked += 1
+#             if path == "":
+#                 dest = p.resolve()
+#             else:
+#                 dest = (p.parent / path).resolve()
+#                 if not dest.exists():
+#                     broken += 1
+#                     rep.error("LINK", f"{p.name} -> {target}  (file inesistente)")
+#                     continue
+#             if anchor:
+#                 if dest not in anchors:
+#                     broken += 1
+#                     rep.error("LINK", f"{p.name} -> {target}  (file non indicizzato)")
+#                 elif anchor not in anchors[dest]:
+#                     broken += 1
+#                     rep.error("LINK", f"{p.name} -> {target}  (ancora assente)")
+#     rep.note(f"  link locali controllati: {checked}  —  rotti: {broken}"
+#              + (f"  —  file non tracciati saltati: {skipped_untracked}"
+#                 if skipped_untracked else "")
+#              + (f"  —  documenti ricevuti saltati: {skipped_received}"
+#                 if skipped_received else ""))
+#
+#
+# # ------------------------------------------------------------------ 5. freschezza
+#
+# def check_freshness(rep: Report):
+#     status = CONTEXT / "status.md"
+#     text = read(status)
+#     if not text:
+#         rep.error("FRESCHEZZA", "docs/context/status.md non esiste o non e' leggibile")
+#         return
+#     sha = core.read_marker(text)
+#     if not sha:
+#         if core.head_sha(ROOT) is None:
+#             # Nessun commit ancora: non c'e' uno sha a cui ancorarsi, ed e' normale.
+#             rep.warn("FRESCHEZZA", "il repository non ha ancora un commit: la freschezza "
+#                                    "si misura dal primo. Dopo il commit rilancia "
+#                                    "agent_context_init.py, che aggiunge il marcatore")
+#             return
+#         rep.error("FRESCHEZZA",
+#                   "status.md non ha il marcatore <!-- context-verified-at: <sha> -->: "
+#                   "senza, la freschezza non e' misurabile")
+#         return
+#     specs, labels = core.code_scope(ROOT, CONFIG)
+#     if not specs:
+#         rep.note(f"  status.md riconciliato a {sha}; nessun codice da sorvegliare, per ora")
+#         return
+#     ok, lines = core.commits_since(ROOT, sha, specs)
+#     if not ok:
+#         rep.warn("FRESCHEZZA", f"commit {sha} non trovato: il marcatore punta al vuoto")
+#         return
+#     where = ", ".join(labels[:8]) + (" …" if len(labels) > 8 else "")
+#     if lines:
+#         rep.warn("FRESCHEZZA",
+#                  f"{len(lines)} commit hanno toccato il codice ({where}) dopo {sha}, "
+#                  f"a cui status.md dichiara di essere riconciliato:\n      " +
+#                  "\n      ".join(lines[:8]))
+#     else:
+#         rep.note(f"  status.md riconciliato a {sha}: nessun commit sul codice da allora")
+#
+#
+# # ------------------------------------------------------------------------- main
+#
+# CHECKS = [
+#     ("0. CONFIGURAZIONE  — cosa viene considerato codice", check_config),
+#     ("1. FEATURE BANDITE — simboli che non devono tornare", check_banned),
+#     ("2. IDENTIFICATORI  — cio' che i doc citano esiste ancora", check_identifiers),
+#     ("3. EVIDENZA        — verificato/dedotto/assunto", check_evidence),
+#     ("4. LINK E ANCORE   — i rimandi risolvono", check_links),
+#     ("5. FRESCHEZZA      — status.md rispetto al codice", check_freshness),
+# ]
+#
+#
+# def main():
+#     quiet = "--quiet" in sys.argv
+#     rep = Report(quiet=quiet)
+#     if not quiet:
+#         print("=" * 74)
+#         print("docs_lint — la documentazione per agenti dice ancora il vero?")
+#         print("=" * 74)
+#     for title, fn in CHECKS:
+#         rep.note("")
+#         rep.note(title)
+#         try:
+#             fn(rep)
+#         except Exception as exc:                      # fail-open sul singolo controllo
+#             rep.warn("INTERNO", f"{title.split('—')[0].strip()}: {type(exc).__name__}: {exc}")
+#
+#     print()
+#     print("=" * 74)
+#     if rep.errors:
+#         print(f"ERRORI: {len(rep.errors)}")
+#         for check, msg in rep.errors:
+#             print(f"  [{check}] {msg}")
+#     if rep.warns:
+#         print(f"AVVISI: {len(rep.warns)}")
+#         for check, msg in rep.warns:
+#             print(f"  [{check}] {msg}")
+#     if not rep.errors and not rep.warns:
+#         print("Tutto a posto.")
+#     elif not rep.errors:
+#         print("Nessun errore. Gli avvisi non fanno fallire il controllo.")
+#     print("=" * 74)
+#     return 1 if rep.errors else 0
+#
+#
+# if __name__ == "__main__":
+#     sys.exit(main())
 #
