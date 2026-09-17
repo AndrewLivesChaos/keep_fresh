@@ -33,7 +33,7 @@ EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
 # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
 # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # i nomi che il lint cerca.
-MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py",
+MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
                  "scripts/agent_context_version.json"}
 # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 MANAGED_NAMES = {"agent_context_init.py"}

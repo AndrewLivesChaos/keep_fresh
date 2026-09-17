@@ -17,8 +17,8 @@ metà del lavoro.
 ## Risultato atteso
 
 ```
-CLAUDE.md            poche righe: rinvio + import verso AGENTS.md
 AGENTS.md            ingresso canonico: cos'è il progetto + tabelle di rotta
+CLAUDE.md            poche righe: rinvio + import verso AGENTS.md (solo se si usa Claude Code)
 docs/context/        contesto per l'agente
   invariants.md      regole inviolabili: regola | dove vive | link al perché
   conventions.md     nomi, unità, scelte lessicali, cosa non si rinomina
@@ -32,9 +32,12 @@ docs/                documentazione dell'applicazione, per le persone
 docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
 
 scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
+scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
 scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
-.claude/hooks/               hooklib.py + session_start.py + stop_check.py
-.claude/settings.local.json  aggancio degli hook, NON versionato: uno per macchina
+
+aggancio degli hook, NON versionato, uno per agente e per macchina:
+.claude/settings.local.json  Claude Code
+.codex/hooks.json            Codex
 ```
 
 Adatta i nomi al progetto, non la logica della divisione. **Scrivi gli script in Python**,
@@ -53,26 +56,31 @@ python agent_context_init.py --dry-run   # dice cosa farebbe
 python agent_context_init.py             # scrive lint, hook, aggancio, scheletri
 ```
 
-Crea `scripts/docs_lint.py`, `scripts/context_core.py`,
-`.claude/hooks/{hooklib,session_start,stop_check}.py`, questa guida, uno scheletro di
-`status.md`, una `config.toml` vuota, e aggancia gli hook in
-`.claude/settings.local.json` **con l'interprete giusto per la macchina** (`python` su
-Windows, `python3` altrove). Non sovrascrive niente senza `--force`, ed è idempotente.
-Alla fine stampa il prompt da incollare.
+Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
+guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
+locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
+per la macchina** (`python` su Windows, `python3` altrove) e il percorso assoluto dello
+script. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
+prompt da incollare e i passi che restano all'utente per ciascun agente.
 
-**L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
-dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbe con il
-repo e arriverebbe sbagliato sull'altra piattaforma, e gli hook, essendo fail-open, non
-girerebbero senza dirlo. Per questo **non dichiarare mai gli hook in
-`.claude/settings.json`**: dichiarati sia lì sia nel file locale girano due volte. Il
+**L'aggancio degli hook non è versionato, di proposito.** Il comando contiene interprete e
+percorso, che sono fatti della macchina: in un file tracciato viaggerebbero con il repo e
+arriverebbero sbagliati altrove, e gli hook, essendo fail-open, non girerebbero senza
+dirlo. Per questo **non dichiarare mai gli hook in un file di configurazione versionato**,
+come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due volte. Il
 prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
 volta su quella macchina: va detto all'utente.
+
+**Codex salta gli hook del repository senza avvisare** finché il progetto non è segnato
+come fidato e gli hook non sono stati approvati dall'utente con `/hooks` dentro Codex; va
+rifatto quando `.codex/hooks.json` cambia. L'agente non può farlo al posto dell'utente:
+glielo deve dire.
 
 **Su un repo che ha già un contesto** non si perde niente: ogni file esistente viene
 rispettato, non sovrascritto. Ma proprio per questo resta **mezzo cablato**, e in modi
 silenziosi — è il caso che va gestito bene, non quello del repo vuoto:
 
-- `.claude/settings.local.json`, se esiste, va **fuso**: aggiungere solo gli hook
+- il file locale di un agente, se esiste, va **fuso**: aggiungere solo gli hook
   mancanti e lasciare intatto il resto. Saltarlo perché esiste lascia gli script su disco
   senza che niente li invochi, e gli hook sono fail-open: nessuno se ne accorge.
   Sovrascriverlo cancella i permessi già configurati. Nessuna delle due è accettabile.
@@ -121,7 +129,7 @@ cambiano l'esito, e vanno messe entrambe:
 > Leggi `docs/agent_docs_guide.md` ed eseguilo su questo repository. **Sono istruzioni
 > operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
 > quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
-> codice, verifiche fatte a mano. In `scripts/` e `.claude/` trovi già il lint e gli hook
+> codice, verifiche fatte a mano. In `scripts/` trovi già il lint e gli hook
 > e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
 > solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
 
@@ -157,7 +165,10 @@ In quest'ordine, fermandoti quando hai abbastanza:
 ## Come scrivere l'ingresso
 
 `AGENTS.md` è la convenzione condivisa fra tool diversi: il contenuto sta lì, e il file
-di ciascun tool è solo un rinvio. `CLAUDE.md`:
+di ciascun tool è solo un rinvio, e solo per i tool che non leggono `AGENTS.md` da soli.
+Codex lo legge da solo, anche partendo da una sottocartella (provato il 2026-09-17 con
+Codex 0.154.0). Claude Code legge `CLAUDE.md` e non `AGENTS.md`, secondo la sua
+documentazione, quindi gli serve il rinvio. `CLAUDE.md`:
 
 ```markdown
 Il contesto di progetto è in [`AGENTS.md`](AGENTS.md), unico e condiviso fra tool
@@ -166,9 +177,9 @@ diversi. La riga qui sotto lo importa; se l'import non fosse attivo, leggilo dal
 @AGENTS.md
 ```
 
-Per aggiungere un tool basta un file con lo stesso rinvio (`GEMINI.md`,
-`.github/copilot-instructions.md`). Crea solo quelli dei tool effettivamente in uso:
-chiedi all'utente quali sono.
+Per aggiungere un tool che non legge `AGENTS.md` basta un file con lo stesso rinvio.
+Crea solo quelli dei tool effettivamente in uso: chiedi all'utente quali sono, e verifica
+sulla documentazione del tool se legge `AGENTS.md` da solo, invece di darlo per scontato.
 
 Tieni **sia il link sia l'import**: se l'import non venisse espanso, resta un file
 leggibile che dice dove andare, invece di un file quasi vuoto che rompe l'ingresso senza
@@ -385,12 +396,19 @@ Esce non-zero se trova errori. Le scelte di progetto che contano:
 È tutta la differenza: `CLAUDE.md`, `AGENTS.md` e le skill dipendono dall'aderenza
 dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 
-Gli **script** degli hook sono versionati; il loro **aggancio** no. Il comando che li
-invoca contiene l'interprete, che cambia da macchina a macchina, quindi sta nella
-configurazione locale (`.claude/settings.local.json`, ignorata da git) e lo scrive
-l'inizializzatore su ogni macchina. Non spostarlo nella configurazione versionata "perché
-valga ovunque": arriverebbe sbagliato sull'altra piattaforma, e se resta anche nel file
-locale gli hook girano due volte.
+Gli **script** degli hook sono versionati e **uguali per ogni agente**
+(`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
+interprete e percorso, che cambiano da macchina a macchina, quindi sta nella
+configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
+ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
+arriverebbe sbagliato su un'altra macchina, e se resta anche nel file locale gli hook
+girano due volte.
+
+Gli script usano solo cio' che gli agenti supportati hanno in comune: all'avvio, testo su
+stdout; a fine turno, uscita `0` con `{"decision": "block", "reason": "..."}` su stdout.
+**Non usare l'uscita `2` per bloccare**: Codex 0.154.0 la tratta come errore e chiude il
+turno comunque, mentre la decisione JSON blocca sia lì sia su Claude Code 2.1.274
+(provato il 2026-09-17, su Windows).
 
 **`SessionStart`** — inietta in contesto, a ogni avvio (`/clear` e compattazione compresi),
 le sezioni volatili: cosa è bloccato, cosa è rotto, il cruscotto dell'evidenza, e un avviso
@@ -400,8 +418,8 @@ ogni avvio — inietta le due sezioni che contano, non tutto il file.
 
 **`Stop`** — scatta **alla fine di ogni risposta**, non a fine sessione: è il punto che
 viene frainteso più spesso, ed è anche il motivo per cui funziona. Se il codice è cambiato
-e il documento di stato è intatto, esce `2` e il turno non si chiude finché non è stato
-gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
+e il documento di stato è intatto, chiede di non chiudere e il turno continua finché non è
+stato gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
 non salta nessun controllo: è già avvenuto a ogni turno precedente.
 
 **Non usare un hook di fine sessione.** Non può bloccare, il suo output viene ignorato, e
@@ -420,7 +438,8 @@ Due proprietà non negoziabili:
   schermo**, quindi l'utente non vede nulla neanche quando funziona perfettamente. È
   l'errore che ho commesso, e ha portato l'utente a credere rotto un hook che girava.
 - **Blocca una volta sola per sessione.** `Stop` scattando a ogni turno diventa martellante
-  se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci.
+  se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci; e
+  non bloccare un turno che l'agente ha gia' prolungato per un hook (`stop_hook_active`).
 
 ## Procedura
 
@@ -483,7 +502,7 @@ E poi: **fai girare il lint completo e mostra l'output vero**, non un riassunto.
 - **Archivi storici** (piani, specifiche, note di sessioni passate): lasciali com'erano,
   riferimenti vecchi inclusi. Riscriverli falsifica il registro di cosa si sapeva e quando.
 - **L'import va verificato davvero**, in una sessione nuova. In Claude Code lo dice
-  `/memory`, che elenca i file caricati. **Non puoi provarlo dalla sessione in cui lo
+  `/context`, alla voce dei file di memoria caricati. **Non puoi provarlo dalla sessione in cui lo
   scrivi**: dillo all'utente invece di dichiararlo funzionante.
 - **Non confondere «l'utente non lo vede» con «non funziona».** Vale per tutto ciò che un
   hook inietta nel contesto: è per l'agente, non per lo schermo. Quando spieghi all'utente

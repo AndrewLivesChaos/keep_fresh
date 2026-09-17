@@ -8,9 +8,11 @@ un turno se il codice è cambiato e lo stato no.
 Lo script fa solo la meccanica. Il contesto lo scrive l'agente, seguendo la guida che lo
 script installa.
 
-> **Stato delle verifiche.** Provato su **Windows 11** con **Python 3.14**, eseguendo lo
-> script e gli hook a mano in repository finti. Gli hook sono scritti per **Claude
-> Code**. Non provato: macOS, Linux, Codex. I comandi per shell POSIX qui sotto sono
+> **Stato delle verifiche.** Provato su **Windows 11** con **Python 3.14**, in repository
+> finti: lo script e gli hook eseguiti a mano, e sessioni vere di **Claude Code 2.1.274**
+> (headless, `claude -p`) e **Codex 0.154.0** (`codex exec`), in cui l'hook di avvio ha
+> iniettato lo stato e quello di fine turno ha bloccato dopo una modifica al codice. Non
+> provato: macOS, Linux, le sessioni interattive. I comandi per shell POSIX qui sotto sono
 > dedotti, non eseguiti.
 
 ## Uso in breve
@@ -52,14 +54,16 @@ rilancia lo script una volta: lo aggiunge da solo, se `status.md` è ancora lo s
 |---|---|---|
 | `scripts/docs_lint.py` | gestito | scritto se manca; `--force` lo aggiorna |
 | `scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
-| `.claude/hooks/*.py` | gestito | come sopra |
+| `scripts/agent_hooks.py` | gestito | come sopra. Gli hook, uguali per ogni agente |
 | `docs/agent_docs_guide.md` | gestito | come sopra. La guida che l'agente esegue |
 | `scripts/agent_context_version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
 | `docs/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
 | `docs/context/config.toml` | **seme** | come sopra. La taratura fatta a mano |
-| `.claude/settings.local.json` | **fuso** | ci aggiunge i due hook, lascia intatto il resto. Non tracciato da git |
+| `.claude/settings.local.json` | **fuso** | aggancio degli hook per Claude Code; lascia intatto il resto. Non tracciato da git |
+| `.codex/hooks.json` | **fuso** | aggancio degli hook per Codex, come sopra |
 | `.claude/settings.json` | ripulito | toccato solo per **togliere** i nostri hook, se una versione vecchia ce li aveva messi |
-| `.gitignore` | fuso | aggiunge `.claude/settings.local.json` se manca |
+| `.claude/hooks/*.py` | ritirato | script di hook della versione precedente: `--force` li toglie, se nessun aggancio li usa più |
+| `.gitignore` | fuso | aggiunge i due file di aggancio se mancano |
 
 `AGENTS.md` e `CLAUDE.md` non li scrive lo script: li scrive l'agente, perché dipendono da
 cosa c'è nel repository.
@@ -77,12 +81,35 @@ a ogni voce.
 
 Il file è un seme: nessun aggiornamento lo sovrascrive.
 
+## Gli agenti
+
+Gli hook sono gli stessi per tutti gli agenti (`scripts/agent_hooks.py`). Cambia solo dove
+si agganciano, e cosa resta da fare a te:
+
+| Agente | Aggancio | Cosa devi fare tu |
+|---|---|---|
+| Claude Code | `.claude/settings.local.json` | niente: partono alla sessione successiva |
+| Codex | `.codex/hooks.json` | aprire Codex nel repository, **fidarti del progetto**, e con `/hooks` **approvare** i due hook. Da rifare se il file cambia |
+
+Codex, senza progetto fidato e hook approvati, **salta gli hook del repository senza
+avvisare** (provato il 2026-09-17, Codex 0.154.0, Windows). La diagnosi dello script
+controlla se il progetto risulta fidato in `~/.codex/config.toml`; l'approvazione degli
+hook non la può vedere.
+
+Codex legge `AGENTS.md` da solo. Claude Code legge `CLAUDE.md`, quindi gli serve un
+`CLAUDE.md` che importi `AGENTS.md`: lo scrive l'agente seguendo la guida.
+
+Un'osservazione non ancora risolta: nella prova con `codex exec` e sandbox
+`workspace-write`, su Windows, Codex ha rifiutato qualunque comando, anche di sola
+lettura (`blocked by policy`). In quelle condizioni non potrebbe nemmeno lanciare il lint.
+
 ## Se il repository passa da una macchina all'altra
 
-Il comando di un hook contiene il nome dell'interprete, che è un fatto della macchina. Per
-questo gli hook si agganciano in `.claude/settings.local.json`, che git non traccia, e non
-in `.claude/settings.json`. **Su ogni macchina, dopo il clone, lancia lo script una
-volta.** Finché non lo fai, quel clone non ha hook.
+Il comando di un hook contiene interprete e percorso assoluto dello script, che sono fatti
+della macchina. Per questo gli hook si agganciano nei file locali degli agenti, che git non
+traccia, e non in quelli condivisi. **Su ogni macchina, dopo il clone, lancia lo script
+una volta** (e per Codex rifai fiducia e approvazione). Finché non lo fai, quel clone non
+ha hook. Lo stesso vale se sposti la cartella del repository: la diagnosi lo segnala.
 
 Dichiarare gli hook in tutti e due i file non è innocuo: girano due volte (misurato su
 Claude Code 2.1.269, Windows, 2026-09-11). Se il repository veniva da una versione vecchia
@@ -130,7 +157,8 @@ python scripts\docs_lint.py
 ```
 
 Deve uscire senza errori; gli avvisi non fanno fallire. Poi apri una sessione nuova
-dell'agente e guarda `.git/claude-hooks.log`: è lì che gli hook scrivono cosa hanno fatto.
+dell'agente e guarda `.git/agent-hooks.log`: è lì che gli hook scrivono cosa hanno fatto,
+una riga per esecuzione con il nome dell'agente.
 A schermo non vedi niente, perché l'iniezione va nel contesto dell'agente. Gli hook sono
 **fail-open**: qualunque errore li fa uscire 0, quindi il log è l'unico modo di accorgersi
 che non girano.
@@ -151,9 +179,10 @@ che non girano.
 - **"Non sei dentro un repository git"**: `git init` prima.
 - **"Questo file non ha payload"**: lo script è troncato. Il sentinella del payload
   compare due volte nel sorgente e il taglio va fatto sempre sull'ultima; ricopia il file.
-- **Gli hook non partono e `.git/claude-hooks.log` resta vuoto**: quasi sempre lo script
-  non è mai stato lanciato su questa macchina. Se il log resta vuoto anche dopo, la
-  diagnosi dice quale interprete gli hook invocano e se qui funziona.
+- **Gli hook non partono e `.git/agent-hooks.log` resta vuoto**: quasi sempre lo script
+  non è mai stato lanciato su questa macchina. Con Codex, il progetto non è fidato o gli
+  hook non sono approvati (`/hooks`). Se il log resta vuoto anche dopo, la diagnosi dice
+  quale interprete gli hook invocano e se qui funziona.
 - **`settings.local.json` "NON TOCCATO"**: non è JSON valido, o `hooks` non ha la forma
   attesa. Gli hook non sono agganciati: si corregge a mano e si rilancia.
 - **Il lint accusa decine di identificatori inesistenti al primo giro**: è normale. Prima
@@ -172,7 +201,7 @@ python agent_context_init.py --pack
 `--pack` impacchetta tutto `payload/` in coda allo script, controlla che lo script
 riscritto si esegua e rilegga il payload, e poi lo usa su un repository finto dall'inizio:
 cartella vuota, primo commit, codice che compare dopo in una directory qualunque, hook di
-fine turno e di avvio, versione registrata e deriva segnalata. Se qualcosa non va, esce con
+fine turno e di avvio, aggancio di ogni agente, versione registrata e deriva segnalata. Se qualcosa non va, esce con
 errore invece di dire "fatto".
 
 Perché il timbro nomini un commit che contiene davvero il payload impacchettato:

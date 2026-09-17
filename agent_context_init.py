@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-17T13:19:58',
+    'packed_at': '2026-09-17T13:33:53',
     'source': 'context_script',
-    'commit': '905fc70',
-    'payload_dirty': False,
-    'payload_sha': '7439c16dd133',
+    'commit': '48d6688',
+    'payload_dirty': True,
+    'payload_sha': 'c17c5c6f68c7',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -84,8 +84,6 @@ STATUS_FILE = "docs/context/status.md"
 CONFIG_FILE = "docs/context/config.toml"
 # I file SEME: scritti solo se mancano, mai sovrascritti, nemmeno con --force.
 SEED_FILES = {CONFIG_FILE}
-
-GITIGNORE_LINES = [".claude/settings.local.json"]
 
 STATUS_SKELETON = """# Stato del lavoro
 {marker}
@@ -161,7 +159,7 @@ Sono istruzioni operative, non la descrizione di un altro progetto.
 Prima di scrivere, chiedimi quello che non e' deducibile dal repo: stato del lavoro,
 decisioni prese fuori dal codice, verifiche fatte a mano.
 
-In scripts/ e .claude/ trovi gia' il lint e gli hook, e NON vanno riscritti. Dove sta il
+In scripts/ trovi gia' il lint e gli hook, e NON vanno riscritti. Dove sta il
 codice lo rilevano da soli a ogni esecuzione. La taratura a mano sta in
 docs/context/config.toml: le liste di eccezioni del lint partono vuote di proposito, e si
 riempiono guardando i falsi positivi del primo giro, con il motivo scritto per ogni voce.
@@ -367,6 +365,10 @@ def smoke_test() -> bool:
         return out
 
     init = [sys.executable, str(Path(__file__).resolve())]
+
+    def stop_hook(stdin):
+        return run(sys.executable, "scripts/agent_hooks.py", "stop", "--agent", "prova",
+                   stdin=stdin)
     try:
         run("git", "init", "-q", ".")
 
@@ -389,27 +391,51 @@ def smoke_test() -> bool:
         # 3. Il codice compare dopo, in una directory che nessuno ha dichiarato.
         (tmp / "lib").mkdir()
         (tmp / "lib" / "core.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s1"}')
-        step("codice nuovo non committato: Stop blocca", r.returncode == 2
-             and "lib" in r.stderr, f"exit {r.returncode}: {r.stderr[-400:]}")
-        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s1"}')
-        step("Stop non blocca due volte nella stessa sessione", r.returncode == 0,
-             f"exit {r.returncode}")
+        r = stop_hook('{"session_id":"s1"}')
+        step("codice nuovo non committato: Stop blocca", _blocks(r, "lib"),
+             f"exit {r.returncode}: {r.stdout[-400:]}")
+        r = stop_hook('{"session_id":"s1"}')
+        step("Stop non blocca due volte nella stessa sessione",
+             r.returncode == 0 and not r.stdout.strip(), f"exit {r.returncode}: {r.stdout}")
+        r = stop_hook('{"session_id":"s9","stop_hook_active":true}')
+        step("Stop non blocca un turno gia' prolungato da un hook",
+             r.returncode == 0 and not r.stdout.strip(), f"exit {r.returncode}: {r.stdout}")
         run("git", "add", "-A")
         run("git", "commit", "-q", "-m", "codice in lib")
         out = lint("codice comparso dopo")
         step("il lint vede il commit sul codice nuovo",
              "[FRESCHEZZA]" in out and "lib/" in out, _lint_lines(out))
-        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin='{"session_id":"s2"}')
+        r = stop_hook('{"session_id":"s2"}')
         step("codice nuovo committato: Stop blocca in una sessione nuova",
-             r.returncode == 2 and "lib/" in r.stderr, f"exit {r.returncode}: {r.stderr[-400:]}")
-        r = run(sys.executable, ".claude/hooks/session_start.py")
+             _blocks(r, "lib/"), f"exit {r.returncode}: {r.stdout[-400:]}")
+        r = run(sys.executable, "scripts/agent_hooks.py", "session-start", "--agent", "prova",
+                stdin='{"source":"startup"}')
         step("SessionStart esce 0 e inietta lo stato",
              r.returncode == 0 and "Stato del progetto" in r.stdout
              and "lib/" in r.stdout, f"exit {r.returncode}: {r.stdout[-400:]}")
-        r = run(sys.executable, ".claude/hooks/stop_check.py", stdin="non json")
-        step("Stop con input malformato non va in errore", r.returncode in (0, 2),
-             f"exit {r.returncode}")
+        r = stop_hook("non json")
+        step("Stop con input malformato non va in errore", r.returncode == 0,
+             f"exit {r.returncode}: {r.stderr[-300:]}")
+        log = tmp / ".git" / "agent-hooks.log"
+        step("la traccia degli hook registra l'agente",
+             log.is_file() and "prova" in log.read_text(encoding="utf-8"))
+
+        # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
+        # con un comando che punta allo script che esiste.
+        gi = (tmp / ".gitignore").read_text(encoding="utf-8")
+        for name, agent in AGENTS.items():
+            try:
+                cfg = json.loads((tmp / agent["config"]).read_text(encoding="utf-8"))
+                cmds = [h["command"] for ev, _ in HOOK_EVENTS
+                        for e in cfg["hooks"][ev] for h in e["hooks"]]
+            except (OSError, ValueError, KeyError, TypeError):
+                cmds = []
+            script = (tmp / HOOKS_SCRIPT).resolve().as_posix().lower()
+            step(f"{agent['label']}: due hook agganciati a {HOOKS_SCRIPT}",
+                 len(cmds) == 2 and all(script in c.lower() and f"--agent {name}" in c
+                                        for c in cmds), f"{cmds}")
+            step(f"{agent['label']}: {agent['config']} e' in .gitignore",
+                 agent["config"] in gi)
         step("nessun __pycache__ lasciato nel repository",
              not any(tmp.rglob("__pycache__")))
 
@@ -451,6 +477,16 @@ def smoke_test() -> bool:
     for f in failures:
         print("  - " + f, file=sys.stderr)
     return False
+
+
+def _blocks(r, needle: str) -> bool:
+    """L'hook di fine turno ha chiesto di non chiudere, citando `needle`?"""
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        return False
+    return (r.returncode == 0 and d.get("decision") == "block"
+            and needle in d.get("reason", ""))
 
 
 def _lint_lines(out: str) -> str:
@@ -632,137 +668,157 @@ def add_marker(root: Path, dry: bool) -> str:
     return f"marcatore di freschezza aggiunto allo scheletro di status.md ({sha})"
 
 
-# ---------------------------------------------------------------------- hook di Claude
+# ------------------------------------------------------------------ agenti e loro hook
 
-HOOK_EVENTS = [("SessionStart", "session_start.py"), ("Stop", "stop_check.py")]
+HOOKS_SCRIPT = "scripts/agent_hooks.py"
+# (evento come lo chiamano gli agenti, argomento di agent_hooks.py)
+HOOK_EVENTS = [("SessionStart", "session-start"), ("Stop", "stop")]
 
+# Gli script di hook delle versioni precedenti, specifici di Claude Code. Riconoscerli
+# serve a migrare gli agganci che li invocano, e a toglierli con --force.
+LEGACY_HOOK_FILES = [".claude/hooks/hooklib.py", ".claude/hooks/session_start.py",
+                     ".claude/hooks/stop_check.py"]
+# Un comando e' "nostro" se invoca uno di questi.
+OUR_SCRIPTS = ("agent_hooks.py", "session_start.py", "stop_check.py")
 
-def hook_entry(interp: str, script: str) -> dict:
-    return {"hooks": [{
-        "type": "command",
-        "command": f'{interp} "$CLAUDE_PROJECT_DIR/.claude/hooks/{script}"',
-        "timeout": 20,
-    }]}
+# Il registro degli agenti. L'unica cosa specifica di un agente e' DOVE si aggancia: gli
+# script sono comuni, e il protocollo (stdout all'avvio, decisione JSON a fine turno) e'
+# quello che gli agenti qui elencati hanno in comune. Aggiungere un agente con lo stesso
+# formato di configurazione vuol dire aggiungere una voce.
+#
+#   config  file LOCALE della macchina dove si dichiarano gli hook; va in .gitignore,
+#           perche' il comando contiene interprete e percorso assoluto
+#   shared  file di configurazione versionato dello stesso agente, da cui una versione
+#           precedente potrebbe aver lasciato i nostri hook (girerebbero due volte)
+#   steps   cosa deve fare l'utente su ogni macchina perche' gli hook partano davvero
+AGENTS = {
+    "claude": {
+        "label": "Claude Code",
+        "config": ".claude/settings.local.json",
+        "shared": ".claude/settings.json",
+        "steps": "Nessun passo: gli hook in .claude/settings.local.json partono alla "
+                 "prossima sessione",
+    },
+    "codex": {
+        "label": "Codex",
+        "config": ".codex/hooks.json",
+        "shared": None,
+        # Provato il 2026-09-17 su Windows con Codex 0.154.0: senza progetto fidato e
+        # senza approvazione, gli hook del repository vengono saltati SENZA avvisi.
+        "steps": "Apri Codex in questo repository e accetta di fidarti del progetto; "
+                 "poi, dentro Codex, `/hooks` e approva i due hook. Va rifatto se "
+                 ".codex/hooks.json cambia (per esempio se il repository si sposta)",
+    },
+}
 
+GITIGNORE_LINES = [a["config"] for a in AGENTS.values()]
 
 # I nomi con cui un hook puo' invocare Python. Solo un comando che comincia cosi' viene
 # riscritto: un percorso assoluto o un virtualenv sono una scelta di chi ce li ha messi.
 INTERP_RE = re.compile(r"^\s*(?:python3|python|py)(?:\s+-3)?(?=\s)")
 
 
-def retarget_hooks(entries: list, interp: str, script: str):
+def hook_command(root: Path, interp: str, event_arg: str, agent: str) -> str:
     """
-    Riscrive l'interprete degli hook gia' presenti che invocano `script`.
-
-    Serve quando il repo e' stato inizializzato su un'altra piattaforma e poi clonato
-    qui: il comando c'e' e punta al file giusto, ma chiama un interprete che su questa
-    macchina non esiste — `python3` su Windows, `python` su macOS. Gli hook sono
-    fail-open, quindi nessuno protesta: i controlli semplicemente non avvengono piu'.
-
-    Ritorna (riscritti, estranei). Gli estranei sono comandi che invocano i nostri
-    script con qualcosa che non riconosciamo: si contano per segnalarli, non si toccano.
+    Percorso ASSOLUTO dello script. Il file di configurazione e' locale alla macchina,
+    quindi un percorso assoluto non viaggia; ed e' l'unica forma che regge ovunque:
+    Codex esegue il comando dalla cartella in cui e' partita la sessione, che puo' essere
+    una sottocartella, e su Windows lo esegue in PowerShell (provato il 2026-09-17), dove
+    una variabile scritta come $NOME non e' una variabile d'ambiente. Barre in avanti:
+    Python e tutte le shell le accettano anche su Windows.
     """
-    riscritti = estranei = 0
-    for entry in entries:
+    script = (root / HOOKS_SCRIPT).as_posix()
+    return f'{interp} "{script}" {event_arg} --agent {agent}'
+
+
+def hook_entry(command: str) -> dict:
+    return {"hooks": [{"type": "command", "command": command, "timeout": 20}]}
+
+
+def _our_hooks(entries):
+    """Coppie (entry, hook) dei nostri hook in una lista di entry di un evento."""
+    found = []
+    for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
             continue
         inner = entry.get("hooks")
         for h in inner if isinstance(inner, list) else []:
-            if not isinstance(h, dict):
-                continue
-            cmd = h.get("command")
-            if not isinstance(cmd, str) or script not in cmd:
-                continue
-            m = INTERP_RE.match(cmd)
-            if not m:
-                estranei += 1
-                continue
-            nuovo = interp + cmd[m.end():]
-            if nuovo != cmd:
-                h["command"] = nuovo
-                riscritti += 1
-    return riscritti, estranei
+            if isinstance(h, dict) and isinstance(h.get("command"), str) \
+                    and any(s in h["command"] for s in OUR_SCRIPTS):
+                found.append((entry, h))
+    return found
 
 
-def our_entry(entry, scripts) -> bool:
-    """L'entry registra uno dei NOSTRI hook?"""
-    if not isinstance(entry, dict):
-        return False
-    inner = entry.get("hooks")
-    for h in inner if isinstance(inner, list) else []:
-        if isinstance(h, dict) and isinstance(h.get("command"), str):
-            if any(s in h["command"] for s in scripts):
-                return True
-    return False
+def _drop_hook(entries: list, entry: dict, hook: dict) -> None:
+    entry["hooks"] = [h for h in entry["hooks"] if h is not hook]
+    if not entry["hooks"]:
+        entries.remove(entry)
 
 
-def unhook_shared(root: Path, dry: bool) -> str:
+def unhook_shared(root: Path, dry: bool) -> list:
     """
-    Toglie i NOSTRI hook dal settings.json condiviso, se ce li ha ancora.
+    Toglie i NOSTRI hook dai file di configurazione versionati degli agenti.
 
-    Fino a una versione precedente di questo script ci stavano li'. Adesso stanno nel
-    file locale, e dichiararli in tutti e due NON e' innocuo: girano due volte.
-    (Provato su Claude Code 2.1.269: sonda in entrambi i file, due esecuzioni.)
+    Una versione precedente di questo script li metteva li'. Adesso stanno nel file
+    locale, e dichiararli in tutti e due NON e' innocuo: girano due volte. (Provato su
+    Claude Code 2.1.269: sonda in entrambi i file, due esecuzioni.)
 
     Il file condiviso e' tracciato da git, quindi la rimozione finisce nel diff
     dell'utente: va dichiarata, non fatta di nascosto. Gli hook di altri restano.
     """
-    p = root / ".claude" / "settings.json"
-    if not p.is_file():
-        return ""
-    try:
-        cfg = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    if not isinstance(cfg, dict) or not isinstance(cfg.get("hooks"), dict):
-        return ""
-
-    scripts = {s for _, s in HOOK_EVENTS}
-    tolti = []
-    for ev, _ in HOOK_EVENTS:
-        entries = cfg["hooks"].get(ev)
-        if not isinstance(entries, list):
+    messaggi = []
+    for name, agent in AGENTS.items():
+        if not agent["shared"]:
             continue
-        restano = [e for e in entries if not our_entry(e, scripts)]
-        if len(restano) == len(entries):
+        p = root / agent["shared"]
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        except (OSError, ValueError):
+            cfg = None
+        if not isinstance(cfg, dict) or not isinstance(cfg.get("hooks"), dict):
             continue
-        tolti.append(ev)
-        if restano:
-            cfg["hooks"][ev] = restano
-        else:
-            del cfg["hooks"][ev]
-    if not tolti:
-        return ""
-    if not cfg["hooks"]:
-        del cfg["hooks"]
-    if not dry:
-        p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-                     encoding="utf-8", newline="\n")
-    return (f"tolti {', '.join(tolti)} da settings.json (adesso stanno nel file "
-            f"locale; dichiarati in due posti girerebbero due volte). E' un file "
-            f"tracciato: il diff e' voluto")
+        tolti = []
+        for ev, _ in HOOK_EVENTS:
+            entries = cfg["hooks"].get(ev)
+            ours = _our_hooks(entries)
+            if not ours:
+                continue
+            for entry, hook in ours:
+                _drop_hook(entries, entry, hook)
+            tolti.append(ev)
+            if not entries:
+                del cfg["hooks"][ev]
+        if not tolti:
+            continue
+        if not cfg["hooks"]:
+            del cfg["hooks"]
+        if not dry:
+            p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+                         encoding="utf-8", newline="\n")
+        messaggi.append(f"tolti {', '.join(tolti)} da {agent['shared']} (adesso stanno "
+                        f"in {agent['config']}; dichiarati in due posti girerebbero due "
+                        f"volte). E' un file tracciato: il diff e' voluto")
+    return messaggi
 
 
-def merge_settings(root: Path, interp: str, dry: bool) -> str:
+def merge_agent(root: Path, name: str, interp: str, dry: bool) -> str:
     """
-    Gli hook si dichiarano in settings.local.json, che git non traccia.
+    Aggancia i nostri hook nel file locale dell'agente. Il file va FUSO, non saltato e
+    non sovrascritto: saltarlo perche' esiste lascia gli script su disco senza che
+    niente li invochi, sovrascriverlo cancella i permessi e gli hook di altri.
 
-    Il comando di un hook contiene il nome dell'interprete, che e' un fatto della
-    MACCHINA: `python` su Windows, `python3` altrove. In un file tracciato quel nome
-    viaggia con il repo e arriva sbagliato ovunque la piattaforma sia un'altra, oppure
-    oscilla a ogni passaggio di mano. In un file locale, ogni macchina tiene il suo.
-
-    Il prezzo, che e' giusto conoscere: un clone appena fatto non ha hook finche' non
-    ci si lancia dentro questo script una volta. Meglio assenti e visibili che presenti
-    e silenziosamente morti, perche' gli hook sono fail-open e non si lamentano.
-
-    Il file va FUSO, non saltato e non sovrascritto: saltarlo perche' esiste lascia gli
-    script su disco senza che niente li invochi, sovrascriverlo cancella i permessi
-    che l'utente ci ha gia' messo.
+    I nostri hook gia' presenti si riscrivono se invocano Python per nome: vale per un
+    interprete di un'altra piattaforma (il repo e' stato clonato da un'altra macchina),
+    per un percorso che non e' piu' quello del repository (il repo si e' spostato) e per
+    gli script di una versione precedente. Un comando con un interprete che non
+    riconosciamo — un percorso assoluto, un virtualenv — e' una scelta di chi l'ha
+    scritto: non si tocca, si segnala.
     """
-    p = root / ".claude" / "settings.local.json"
+    p = root / AGENTS[name]["config"]
+    wanted = {ev: hook_command(root, interp, arg, name) for ev, arg in HOOK_EVENTS}
+
     if not p.exists():
-        cfg = {"hooks": {ev: [hook_entry(interp, s)] for ev, s in HOOK_EVENTS}}
+        cfg = {"hooks": {ev: [hook_entry(cmd)] for ev, cmd in wanted.items()}}
         if not dry:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
@@ -774,25 +830,34 @@ def merge_settings(root: Path, interp: str, dry: bool) -> str:
     except (OSError, ValueError) as exc:
         return (f"NON TOCCATO: non e' JSON valido ({exc}). Gli hook NON sono "
                 f"agganciati: correggilo a mano e rilancia")
-    if not isinstance(cfg, dict):
-        return "NON TOCCATO: non contiene un oggetto JSON. Gli hook NON sono agganciati"
+    if not isinstance(cfg, dict) or not isinstance(cfg.setdefault("hooks", {}), dict):
+        return "NON TOCCATO: non ha la forma attesa. Gli hook NON sono agganciati"
 
-    hooks = cfg.setdefault("hooks", {})
-    added, riscritti, estranei = [], 0, 0
-    for ev, script in HOOK_EVENTS:
-        entries = hooks.setdefault(ev, [])
+    added, riscritti, doppi, estranei = [], 0, 0, 0
+    for ev, cmd in wanted.items():
+        entries = cfg["hooks"].setdefault(ev, [])
         if not isinstance(entries, list):
             return f"NON TOCCATO: 'hooks.{ev}' non e' una lista. Aggancia a mano"
-        if script in json.dumps(entries):
-            # C'e' gia', ma non e' detto che sia eseguibile QUI: vedi retarget_hooks.
-            r, e = retarget_hooks(entries, interp, script)
-            riscritti += r
-            estranei += e
+        ours = _our_hooks(entries)
+        if not ours:
+            entries.append(hook_entry(cmd))
+            added.append(ev)
             continue
-        entries.append(hook_entry(interp, script))
-        added.append(ev)
+        tenuto = False
+        for entry, hook in ours:
+            if not INTERP_RE.match(hook["command"]):
+                estranei += 1
+                continue
+            if tenuto:
+                _drop_hook(entries, entry, hook)       # un doppione: girerebbe due volte
+                doppi += 1
+                continue
+            tenuto = True
+            if hook["command"] != cmd:
+                hook["command"] = cmd
+                riscritti += 1
 
-    if not added and not riscritti:
+    if not (added or riscritti or doppi):
         return ("gia' agganciato, lasciato com'era" + (
             f"  ({estranei} comando invoca i nostri hook con un interprete che non "
             f"riconosco: controllalo a mano)" if estranei else ""))
@@ -803,26 +868,47 @@ def merge_settings(root: Path, interp: str, dry: bool) -> str:
     if added:
         parti.append(f"aggiunti {', '.join(added)}")
     if riscritti:
-        parti.append(f"interprete portato a '{interp}' in {riscritti} hook "
-                     f"(il repo era stato inizializzato su un'altra piattaforma)")
+        parti.append(f"{riscritti} comandi riscritti (interprete, percorso o script di "
+                     f"una versione precedente)")
+    if doppi:
+        parti.append(f"{doppi} doppioni tolti")
     return "fuso: " + "; ".join(parti) + " (il resto lasciato intatto)"
 
 
+def retire_legacy_hooks(root: Path, force: bool, dry: bool) -> str:
+    """
+    Gli script di hook della versione precedente, in .claude/hooks/. Si tolgono solo con
+    --force, come ogni file gestito, e solo se nessun aggancio locale li invoca ancora:
+    togliere uno script che un comando su misura usa lo farebbe fallire in silenzio.
+    """
+    presenti = [rel for rel in LEGACY_HOOK_FILES if (root / rel).is_file()]
+    if not presenti:
+        return ""
+    for agent in AGENTS.values():
+        p = root / agent["config"]
+        try:
+            blob = p.read_text(encoding="utf-8") if p.is_file() else ""
+        except OSError:
+            blob = ""
+        if any(Path(rel).name in blob for rel in presenti):
+            return (f"{', '.join(presenti)} ancora invocati da {agent['config']}: "
+                    f"lasciati dove sono")
+    if not force:
+        return (f"{', '.join(presenti)} non servono piu' (gli hook ora sono in "
+                f"{HOOKS_SCRIPT}): --force li toglie")
+    if not dry:
+        for rel in presenti:
+            (root / rel).unlink()
+        d = root / ".claude" / "hooks"
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+    return f"tolti {', '.join(presenti)}: gli hook ora sono in {HOOKS_SCRIPT}"
+
+
 CMD_RE = re.compile(r'"command"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
-
-
-def interpreters_in(blob: str) -> list:
-    """Con quali interpreti settings.json invoca i NOSTRI hook, senza ripetizioni."""
-    nostri = {s for _, s in HOOK_EVENTS}
-    nomi = []
-    for m in CMD_RE.finditer(blob):
-        cmd = m.group(1)
-        if not any(s in cmd for s in nostri):
-            continue
-        n = INTERP_RE.match(cmd)
-        if n and n.group(0).strip() not in nomi:
-            nomi.append(n.group(0).strip())
-    return nomi
 
 
 def interpreter_works(nome: str) -> bool:
@@ -841,13 +927,44 @@ def interpreter_works(nome: str) -> bool:
         return False
 
 
+def codex_trusted(root: Path):
+    """
+    Il progetto risulta fidato nella configurazione utente di Codex? None se non si
+    puo' dire. Il confronto e' sul percorso esatto: provato il 2026-09-17 che una
+    cartella madre fidata non basta a far partire gli hook di un repository al suo
+    interno. La forma delle chiavi e' quella osservata su Windows; altrove e' dedotta.
+    """
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        with open(home / "config.toml", "rb") as fh:
+            projects = tomllib.load(fh).get("projects", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    norm = lambda s: os.path.normcase(os.path.normpath(str(s))).rstrip("\\/")
+    target = norm(root.resolve())
+    for key, val in projects.items() if isinstance(projects, dict) else []:
+        if norm(key) == target and isinstance(val, dict):
+            return val.get("trust_level") == "trusted"
+    return False
+
+
+def git_tracks(root: Path, rel: str) -> bool:
+    try:
+        r = subprocess.run(["git", "ls-files", "--error-unmatch", "--", rel],
+                           capture_output=True, text=True, cwd=str(root))
+        return r.returncode == 0
+    except OSError:
+        return False
+
+
 # ------------------------------------------------------------------------- diagnosi
 
 def diagnose(root: Path, interp: str) -> list:
     """
     Cosa resta NON funzionante dopo l'inizializzazione. Serve soprattutto quando il
     repo aveva gia' un contesto: i file esistenti vengono rispettati, e proprio per
-    questo possono restare privi di cio' che lint e hook usano.
+    questo possono restare privi di cio' che lint e hook usano. Si controlla OGNI agente
+    del registro: "tutto agganciato" per uno non dice niente degli altri.
     """
     problemi = []
 
@@ -855,13 +972,13 @@ def diagnose(root: Path, interp: str) -> list:
     if lint.is_file() and "context_core" not in lint.read_text(encoding="utf-8",
                                                                errors="replace"):
         problemi.append(
-            "scripts/docs_lint.py e gli hook sono della versione precedente, con la\n"
-            "     taratura scritta dentro gli script. Rilancia con --force per aggiornarli:\n"
-            "     le liste di eccezioni sono gia' state copiate in docs/context/config.toml,\n"
-            "     e config.toml non viene mai sovrascritto.")
-    elif not (root / "scripts" / "context_core.py").is_file():
-        problemi.append("scripts/context_core.py manca: lint e hook non sanno dove sta il "
-                        "codice. Rilancia con --force.")
+            "scripts/docs_lint.py e' della versione precedente, con la taratura scritta\n"
+            "     dentro lo script. Rilancia con --force per aggiornarlo: le liste di\n"
+            "     eccezioni sono gia' state copiate in docs/context/config.toml, e\n"
+            "     config.toml non viene mai sovrascritto.")
+    for rel in ("scripts/context_core.py", HOOKS_SCRIPT):
+        if not (root / rel).is_file():
+            problemi.append(f"{rel} manca: lint e hook non funzionano. Rilancia con --force.")
 
     c = root / CONFIG_FILE
     if c.is_file():
@@ -895,41 +1012,56 @@ def diagnose(root: Path, interp: str) -> list:
                 "     delimita le sezioni che vuoi vedere a ogni sessione (cosa blocca,\n"
                 "     difetti aperti).")
 
-    s = root / ".claude" / "settings.local.json"
-    if not s.is_file():
-        problemi.append(".claude/settings.local.json manca: gli hook NON sono "
-                        "agganciati.")
-    else:
+    provati = {}
+    for name, agent in AGENTS.items():
+        label, rel = agent["label"], agent["config"]
+        p = root / rel
+        if not p.is_file():
+            problemi.append(f"{label}: {rel} manca, gli hook NON sono agganciati.")
+            continue
         try:
-            blob = s.read_text(encoding="utf-8")
-            for ev, script in HOOK_EVENTS:
-                if script not in blob:
-                    problemi.append(f"{script} non compare in "
-                                    f".claude/settings.local.json: l'hook {ev} NON e' "
-                                    f"agganciato.")
-            # Dichiarati in tutti e due i file, girerebbero due volte.
-            cond = root / ".claude" / "settings.json"
-            if cond.is_file():
-                altro = cond.read_text(encoding="utf-8", errors="replace")
-                if any(script in altro for _, script in HOOK_EVENTS):
-                    problemi.append(
-                        "i nostri hook compaiono ANCHE in .claude/settings.json: "
-                        "girerebbero due volte.\n     Toglili da li', il posto giusto "
-                        "e' settings.local.json.")
-            # Agganciato non vuol dire eseguibile: l'interprete scritto li' dentro deve
-            # esistere QUI. Non basta guardarne il nome, si prova a eseguirlo.
-            for nome in interpreters_in(blob):
-                if not interpreter_works(nome):
+            blob = p.read_text(encoding="utf-8")
+        except OSError:
+            problemi.append(f"{label}: {rel} non leggibile.")
+            continue
+        comandi = [json.loads('"' + m.group(1) + '"') for m in CMD_RE.finditer(blob)]
+        nostri = [cmd for cmd in comandi if any(s in cmd for s in OUR_SCRIPTS)]
+        for ev, arg in HOOK_EVENTS:
+            if not any(HOOKS_SCRIPT.rsplit("/", 1)[-1] in cmd and f" {arg}" in cmd
+                       for cmd in nostri):
+                problemi.append(f"{label}: l'hook {ev} non invoca {HOOKS_SCRIPT} in {rel}.")
+        if git_tracks(root, rel):
+            problemi.append(f"{label}: {rel} e' tracciato da git, ma contiene interprete "
+                            f"e percorso di QUESTA macchina.\n     Toglilo dall'indice "
+                            f"(git rm --cached {rel}): e' gia' in .gitignore.")
+        if agent["shared"] and (root / agent["shared"]).is_file():
+            altro = (root / agent["shared"]).read_text(encoding="utf-8", errors="replace")
+            if any(s in altro for s in OUR_SCRIPTS):
+                problemi.append(f"{label}: i nostri hook compaiono ANCHE in "
+                                f"{agent['shared']}: girerebbero due volte.")
+        for cmd in nostri:
+            # Il percorso dello script deve esistere: un repository spostato lascia
+            # agganci che puntano al vuoto, e gli hook fail-open non lo dicono.
+            m = re.search(r'"([^"]+\.py)"', cmd)
+            if m and not Path(m.group(1)).is_file():
+                problemi.append(f"{label}: un hook invoca {m.group(1)}, che non esiste. "
+                                f"Rilancia l'inizializzatore, che riscrive il percorso.")
+            # Agganciato non vuol dire eseguibile: l'interprete deve esistere QUI.
+            n = INTERP_RE.match(cmd)
+            nome = n.group(0).strip() if n else None
+            if nome and nome not in provati:
+                provati[nome] = interpreter_works(nome)
+                if not provati[nome]:
                     problemi.append(
                         f"gli hook invocano `{nome}`, che su questa macchina non esegue "
                         f"niente (provato: `{nome} -c pass`).\n"
                         f"     Sono fail-open: non protesterebbero, semplicemente non "
-                        f"girerebbero. Installalo con questo nome,\n"
-                        f"     oppure rilancia l'inizializzatore, che riscrive "
-                        f"l'interprete.")
-        except OSError:
-            problemi.append(".claude/settings.local.json non leggibile.")
-
+                        f"girerebbero. Installalo con questo nome, oppure\n     "
+                        f"riscrivi a mano il comando con l'interprete che usi.")
+        if name == "codex" and codex_trusted(root) is False:
+            problemi.append(f"{label}: il progetto non risulta fidato in "
+                            f"~/.codex/config.toml, e senza fiducia Codex salta gli hook\n"
+                            f"     del repository senza avvisare.\n     {agent['steps']}.")
     return problemi
 
 
@@ -981,7 +1113,8 @@ def ensure_gitignore(root: Path, dry: bool) -> str:
         return "gia' a posto"
     if not dry:
         with open(gi, "a", encoding="utf-8") as fh:
-            fh.write("\n# Claude Code: impostazioni locali della macchina, non condivise\n")
+            fh.write("\n# Agenti: aggancio degli hook, con interprete e percorsi di questa "
+                     "macchina\n")
             for l in add:
                 fh.write(l + "\n")
     return f"aggiunte {len(add)} righe"
@@ -1105,11 +1238,14 @@ def main() -> int:
         fatto = add_marker(root, args.dry_run)
         if fatto:
             print(f"  status:     {fatto}")
-    print(f"  settings:   {merge_settings(root, interp, args.dry_run)}"
-          f"  ->  .claude/settings.local.json, che git non traccia")
-    ripulito = unhook_shared(root, args.dry_run)
-    if ripulito:
-        print(f"  migrazione: {ripulito}")
+    for name, agent in AGENTS.items():
+        print(f"  {agent['label']:<12}{merge_agent(root, name, interp, args.dry_run)}"
+              f"  ->  {agent['config']}")
+    for msg in unhook_shared(root, args.dry_run):
+        print(f"  migrazione: {msg}")
+    vecchi = retire_legacy_hooks(root, args.force, args.dry_run)
+    if vecchi:
+        print(f"  hook vecchi: {vecchi}")
     print(f"  .gitignore: {ensure_gitignore(root, args.dry_run)}")
 
     problemi = (diagnose(root, interp) + version_drift(root, payload)
@@ -1147,15 +1283,19 @@ chiesto nel prompt qui sotto.
             print(f"  {n}. {msg}")
     print("-" * 74)
     print("""
-2. Quando ha finito, verifica tu:
+2. Perche' gli hook partano davvero, per ogni agente che usi su questa macchina:""")
+    for agent in AGENTS.values():
+        print(f"     {agent['label']}: {agent['steps']}.")
+    print("""
+3. Quando l'agente ha finito, verifica tu:
      python scripts/docs_lint.py          deve uscire senza errori
      git log --oneline -5                 cosa ha committato
-   e che l'hook di avvio giri davvero: apri una sessione nuova e guarda
-     .git/claude-hooks.log
-   Su ogni ALTRA macchina dove clonerai questo repo, rilancia questo script una
-   volta: gli hook stanno in .claude/settings.local.json, che non viene clonato.
+   e che gli hook girino davvero: apri una sessione nuova e guarda
+     .git/agent-hooks.log                 una riga per ogni esecuzione, con l'agente
    Non aspettarti di vedere niente a schermo: l'iniezione va nel contesto
    dell'agente, non nel tuo terminale.
+   Su ogni ALTRA macchina dove clonerai questo repo, rilancia questo script una
+   volta: gli agganci degli hook sono locali e non vengono clonati.
 """)
     return 0
 
@@ -1165,317 +1305,6 @@ if __name__ == "__main__":
 
 
 # ==== PAYLOAD (rigenerabile con --pack, non modificare a mano) ====
-# ---- AGENT-CONTEXT-FILE: .claude/hooks/hooklib.py ----
-# #!/usr/bin/env python3
-# # -*- coding: utf-8 -*-
-# """
-# hooklib — la parte comune agli hook di Claude Code. Python, non shell, perche' deve
-# girare uguale su ogni sistema operativo.
-#
-# Qui non c'e' niente di specifico del progetto. Dove sta il codice lo rileva
-# scripts/context_core.py a ogni esecuzione, lo stesso modulo che usa il lint: hook e
-# lint rispondono sempre allo stesso modo alla domanda "e' cambiato il codice?".
-#
-# Se context_core non si trova, `core` resta None e gli hook tacciono: sono fail-open.
-# """
-#
-# import io
-# import sys
-# from datetime import datetime
-# from pathlib import Path
-# import subprocess
-#
-#
-# def setup_stdout() -> None:
-#     """La console di Windows non e' UTF-8: senza questo, una freccia uccide l'hook."""
-#     try:
-#         if hasattr(sys.stdout, "buffer"):
-#             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
-#                                           errors="replace")
-#     except Exception:
-#         pass
-#
-#
-# def _root_via_git():
-#     try:
-#         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-#                            capture_output=True, text=True, encoding="utf-8",
-#                            errors="replace")
-#         if r.returncode == 0 and r.stdout.strip():
-#             return Path(r.stdout.strip())
-#     except OSError:
-#         pass
-#     return None
-#
-#
-# def _load_core():
-#     root = _root_via_git()
-#     if root is None:
-#         return None
-#     # Importare context_core non deve lasciare __pycache__ nel repository.
-#     sys.dont_write_bytecode = True
-#     sys.path.insert(0, str(root / "scripts"))
-#     try:
-#         import context_core
-#         return context_core
-#     except Exception:
-#         return None
-#
-#
-# core = _load_core()
-#
-#
-# def log(event: str, outcome: str) -> None:
-#     """
-#     Traccia su file. E' l'UNICO modo in cui l'utente puo' vedere che l'hook e'
-#     partito: lo stdout di SessionStart va nel contesto dell'agente, non a schermo, e
-#     gli hook sono fail-open, quindi senza questa riga un hook rotto e un hook assente
-#     sono indistinguibili. Si scrivono anche gli esiti silenziosi, per lo stesso motivo.
-#     """
-#     try:
-#         root = _root_via_git()
-#         if root is None:
-#             return
-#         g = core.git_dir(root) if core else root / ".git"
-#         if g is None or not g.is_dir():
-#             return
-#         line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {event:<13} {outcome}\n"
-#         with open(g / "claude-hooks.log", "a", encoding="utf-8") as fh:
-#             fh.write(line)
-#     except Exception:
-#         pass
-#
-# ---- AGENT-CONTEXT-FILE: .claude/hooks/session_start.py ----
-# #!/usr/bin/env python3
-# # -*- coding: utf-8 -*-
-# """
-# SessionStart — inietta in contesto lo stato corrente del progetto.
-#
-# Perche' esiste: il file di ingresso (AGENTS.md) e' caricato in automatico, ma i file
-# dei sottosistemi e status.md no — si aprono solo se l'agente decide di seguire il
-# rinvio. Questo hook toglie di mezzo quella discrezionalita' per il file piu' volatile.
-#
-# Lo stdout di SessionStart entra nel contesto dell'agente, NON a schermo: l'utente non
-# vede niente ed e' normale. La prova che sia partito e' la riga in .git/claude-hooks.log.
-# Ogni riga stampata si paga in token a ogni avvio, /clear e compattazione compresi.
-#
-# FAIL-OPEN: qualunque errore esce 0 e non stampa. Un hook rotto deve degradare ad
-# "assente", mai a "bloccante".
-# """
-#
-# import sys
-#
-# # Importare hooklib non deve lasciare __pycache__ nel repository.
-# sys.dont_write_bytecode = True
-#
-# from hooklib import core, log, setup_stdout
-#
-# setup_stdout()
-#
-#
-# def main() -> int:
-#     if core is None:
-#         log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
-#         return 0
-#     root = core.repo_root()
-#     if root is None:
-#         return 0
-#
-#     STATUS_FILE = core.STATUS_FILE
-#     status_path = root / STATUS_FILE
-#     if not status_path.is_file():
-#         log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
-#         return 0
-#
-#     status = status_path.read_text(encoding="utf-8", errors="replace")
-#     cfg, _ = core.load_config(root)
-#     specs, labels = core.code_scope(root, cfg)
-#     where = ", ".join(labels)
-#
-#     out = [
-#         "=== Stato del progetto (iniettato da .claude/hooks/session_start.py) ===",
-#         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, rileggi il file intero.",
-#         "",
-#     ]
-#
-#     # --- Le sezioni che il documento stesso dichiara volatili ---
-#     blocks = core.extract_marked(status)
-#     if blocks:
-#         out.append("\n\n".join(blocks))
-#         out.append("")
-#     else:
-#         out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
-#                    f"nessuna sezione dichiarata volatile.)")
-#         out.append("")
-#
-#     # --- Cruscotto dei livelli di evidenza ---
-#     levels = core.count_levels(root)
-#     out.append("Evidenza nei documenti di contesto: " +
-#                "  ".join(f"{k}={v}" for k, v in levels.items()))
-#
-#     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
-#     sha = core.read_marker(status)
-#     if sha:
-#         ok, since = core.commits_since(root, sha, specs)
-#         if ok and since:
-#             out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
-#                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
-#                        f"riconciliato. Potrebbe dire cose non piu' vere.")
-#     elif core.head_sha(root) is not None:
-#         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
-#                    f"la sua freschezza non e' misurabile.")
-#
-#     # --- Lavoro non registrato rimasto da una sessione precedente ---
-#     if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
-#         out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
-#                    f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
-#                    f"precedente mai registrato: valuta se va annotato.")
-#
-#     out += ["", "Verifica che i documenti dicano ancora il vero: "
-#                 "python scripts/docs_lint.py",
-#             "=== fine stato del progetto ==="]
-#
-#     text = "\n".join(out)
-#     print(text)
-#     log("SessionStart", f"iniettati {len(text)} caratteri "
-#                         f"(assunto={levels.get('assunto', 0)})")
-#     return 0
-#
-#
-# if __name__ == "__main__":
-#     try:
-#         sys.exit(main())
-#     except Exception as exc:                      # fail-open, sempre
-#         try:
-#             log("SessionStart", f"ERRORE INTERNO {type(exc).__name__} "
-#                                 f"(fail-open, nessun blocco)")
-#         except Exception:
-#             pass
-#         sys.exit(0)
-#
-# ---- AGENT-CONTEXT-FILE: .claude/hooks/stop_check.py ----
-# #!/usr/bin/env python3
-# # -*- coding: utf-8 -*-
-# """
-# Stop — impedisce di chiudere il turno se il codice e' cambiato e lo stato del lavoro no.
-#
-# Stop scatta alla fine di OGNI risposta, non a fine sessione. E' esattamente il motivo
-# per cui funziona: non esiste un "momento finale" da intercettare, e chiudere il
-# terminale non salta nessun controllo, perche' il controllo e' gia' avvenuto a ogni
-# turno precedente.
-#
-# Exit 2 = "prevents Claude from stopping, continues conversation", con il messaggio
-# preso da stderr. Blocca UNA SOLA VOLTA per sessione: poi lascia un marcatore in .git/
-# e tace, altrimenti diventa martellante.
-#
-# FAIL-OPEN: qualunque errore esce 0. Un hook rotto non deve mai bloccare il lavoro.
-# """
-#
-# import json
-# import re
-# import sys
-#
-# # Importare hooklib non deve lasciare __pycache__ nel repository.
-# sys.dont_write_bytecode = True
-#
-# from hooklib import core, log, setup_stdout
-#
-# setup_stdout()
-#
-# MESSAGE = """Il codice e' cambiato e {status} e' intatto.
-#
-#   - {reasons}
-#
-# Prima di chiudere: aggiorna {status} (difetto notato, verifica saltata, decisione
-# rimandata, stato del lavoro), oppure dichiara esplicitamente all'utente perche' non
-# serve. Se hai riconciliato il documento con il codice, riporta anche il marcatore
-# context-verified-at a HEAD.
-#
-# Questo controllo blocca una volta sola per sessione: non ripartira'."""
-#
-#
-# def session_id() -> str:
-#     try:
-#         raw = sys.stdin.read()
-#     except Exception:
-#         return "ignota"
-#     if not raw:
-#         return "ignota"
-#     try:
-#         sid = json.loads(raw).get("session_id")
-#         return str(sid) if sid else "ignota"
-#     except Exception:
-#         return "ignota"
-#
-#
-# def main() -> int:
-#     sid = session_id()
-#     if core is None:
-#         log("Stop", "scripts/context_core.py non trovato: nessun controllo")
-#         return 0
-#     root = core.repo_root()
-#     if root is None:
-#         return 0
-#     g = core.git_dir(root)
-#     if g is None:
-#         return 0
-#
-#     STATUS_FILE = core.STATUS_FILE
-#     safe = re.sub(r"[^A-Za-z0-9_-]", "", sid) or "ignota"
-#     flag = g / f"docs-status-nag-{safe}.flag"
-#     if flag.exists():
-#         log("Stop", "ok (gia' segnalato in questa sessione)")
-#         return 0
-#
-#     if core.dirty(root, [STATUS_FILE]):
-#         log("Stop", f"ok ({STATUS_FILE} gia' toccato)")
-#         return 0
-#
-#     cfg, _ = core.load_config(root)
-#     specs, labels = core.code_scope(root, cfg)
-#     if not specs:
-#         log("Stop", "ok (nessun codice nel repository, per ora)")
-#         return 0
-#     where = ", ".join(labels)
-#
-#     reasons = []
-#
-#     changed = core.dirty(root, specs)
-#     if changed:
-#         files = ", ".join(re.sub(r"^\s*\S+\s+", "", l) for l in changed.splitlines())
-#         reasons.append(f"modifiche non committate: {files}")
-#
-#     status_path = root / STATUS_FILE
-#     if status_path.is_file():
-#         sha = core.read_marker(status_path.read_text(encoding="utf-8", errors="replace"))
-#         if sha:
-#             ok, since = core.commits_since(root, sha, specs)
-#             if ok and since:
-#                 reasons.append(f"{len(since)} commit sul codice ({where}) dopo {sha}, "
-#                                f"il punto a cui {STATUS_FILE} dichiara di essere "
-#                                f"riconciliato")
-#
-#     if not reasons:
-#         log("Stop", "ok (codice invariato dal marcatore)")
-#         return 0
-#
-#     flag.write_text("", encoding="utf-8")
-#     log("Stop", "BLOCCATO: " + "; ".join(reasons))
-#     sys.stderr.write(MESSAGE.format(status=STATUS_FILE,
-#                                     reasons="\n  - ".join(reasons)) + "\n")
-#     return 2
-#
-#
-# if __name__ == "__main__":
-#     try:
-#         sys.exit(main())
-#     except Exception as exc:                      # fail-open, sempre
-#         try:
-#             log("Stop", f"ERRORE INTERNO {type(exc).__name__} (fail-open, nessun blocco)")
-#         except Exception:
-#             pass
-#         sys.exit(0)
-#
 # ---- AGENT-CONTEXT-FILE: docs/agent_docs_guide.md ----
 # # Istruzioni per l'agente — creare il contesto di progetto
 #
@@ -1496,8 +1325,8 @@ if __name__ == "__main__":
 # ## Risultato atteso
 #
 # ```
-# CLAUDE.md            poche righe: rinvio + import verso AGENTS.md
 # AGENTS.md            ingresso canonico: cos'è il progetto + tabelle di rotta
+# CLAUDE.md            poche righe: rinvio + import verso AGENTS.md (solo se si usa Claude Code)
 # docs/context/        contesto per l'agente
 #   invariants.md      regole inviolabili: regola | dove vive | link al perché
 #   conventions.md     nomi, unità, scelte lessicali, cosa non si rinomina
@@ -1511,9 +1340,12 @@ if __name__ == "__main__":
 # docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
 #
 # scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
+# scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
 # scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
-# .claude/hooks/               hooklib.py + session_start.py + stop_check.py
-# .claude/settings.local.json  aggancio degli hook, NON versionato: uno per macchina
+#
+# aggancio degli hook, NON versionato, uno per agente e per macchina:
+# .claude/settings.local.json  Claude Code
+# .codex/hooks.json            Codex
 # ```
 #
 # Adatta i nomi al progetto, non la logica della divisione. **Scrivi gli script in Python**,
@@ -1532,26 +1364,31 @@ if __name__ == "__main__":
 # python agent_context_init.py             # scrive lint, hook, aggancio, scheletri
 # ```
 #
-# Crea `scripts/docs_lint.py`, `scripts/context_core.py`,
-# `.claude/hooks/{hooklib,session_start,stop_check}.py`, questa guida, uno scheletro di
-# `status.md`, una `config.toml` vuota, e aggancia gli hook in
-# `.claude/settings.local.json` **con l'interprete giusto per la macchina** (`python` su
-# Windows, `python3` altrove). Non sovrascrive niente senza `--force`, ed è idempotente.
-# Alla fine stampa il prompt da incollare.
+# Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
+# guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
+# locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
+# per la macchina** (`python` su Windows, `python3` altrove) e il percorso assoluto dello
+# script. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
+# prompt da incollare e i passi che restano all'utente per ciascun agente.
 #
-# **L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
-# dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbe con il
-# repo e arriverebbe sbagliato sull'altra piattaforma, e gli hook, essendo fail-open, non
-# girerebbero senza dirlo. Per questo **non dichiarare mai gli hook in
-# `.claude/settings.json`**: dichiarati sia lì sia nel file locale girano due volte. Il
+# **L'aggancio degli hook non è versionato, di proposito.** Il comando contiene interprete e
+# percorso, che sono fatti della macchina: in un file tracciato viaggerebbero con il repo e
+# arriverebbero sbagliati altrove, e gli hook, essendo fail-open, non girerebbero senza
+# dirlo. Per questo **non dichiarare mai gli hook in un file di configurazione versionato**,
+# come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due volte. Il
 # prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
 # volta su quella macchina: va detto all'utente.
+#
+# **Codex salta gli hook del repository senza avvisare** finché il progetto non è segnato
+# come fidato e gli hook non sono stati approvati dall'utente con `/hooks` dentro Codex; va
+# rifatto quando `.codex/hooks.json` cambia. L'agente non può farlo al posto dell'utente:
+# glielo deve dire.
 #
 # **Su un repo che ha già un contesto** non si perde niente: ogni file esistente viene
 # rispettato, non sovrascritto. Ma proprio per questo resta **mezzo cablato**, e in modi
 # silenziosi — è il caso che va gestito bene, non quello del repo vuoto:
 #
-# - `.claude/settings.local.json`, se esiste, va **fuso**: aggiungere solo gli hook
+# - il file locale di un agente, se esiste, va **fuso**: aggiungere solo gli hook
 #   mancanti e lasciare intatto il resto. Saltarlo perché esiste lascia gli script su disco
 #   senza che niente li invochi, e gli hook sono fail-open: nessuno se ne accorge.
 #   Sovrascriverlo cancella i permessi già configurati. Nessuna delle due è accettabile.
@@ -1600,7 +1437,7 @@ if __name__ == "__main__":
 # > Leggi `docs/agent_docs_guide.md` ed eseguilo su questo repository. **Sono istruzioni
 # > operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
 # > quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
-# > codice, verifiche fatte a mano. In `scripts/` e `.claude/` trovi già il lint e gli hook
+# > codice, verifiche fatte a mano. In `scripts/` trovi già il lint e gli hook
 # > e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
 # > solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
 #
@@ -1636,7 +1473,10 @@ if __name__ == "__main__":
 # ## Come scrivere l'ingresso
 #
 # `AGENTS.md` è la convenzione condivisa fra tool diversi: il contenuto sta lì, e il file
-# di ciascun tool è solo un rinvio. `CLAUDE.md`:
+# di ciascun tool è solo un rinvio, e solo per i tool che non leggono `AGENTS.md` da soli.
+# Codex lo legge da solo, anche partendo da una sottocartella (provato il 2026-09-17 con
+# Codex 0.154.0). Claude Code legge `CLAUDE.md` e non `AGENTS.md`, secondo la sua
+# documentazione, quindi gli serve il rinvio. `CLAUDE.md`:
 #
 # ```markdown
 # Il contesto di progetto è in [`AGENTS.md`](AGENTS.md), unico e condiviso fra tool
@@ -1645,9 +1485,9 @@ if __name__ == "__main__":
 # @AGENTS.md
 # ```
 #
-# Per aggiungere un tool basta un file con lo stesso rinvio (`GEMINI.md`,
-# `.github/copilot-instructions.md`). Crea solo quelli dei tool effettivamente in uso:
-# chiedi all'utente quali sono.
+# Per aggiungere un tool che non legge `AGENTS.md` basta un file con lo stesso rinvio.
+# Crea solo quelli dei tool effettivamente in uso: chiedi all'utente quali sono, e verifica
+# sulla documentazione del tool se legge `AGENTS.md` da solo, invece di darlo per scontato.
 #
 # Tieni **sia il link sia l'import**: se l'import non venisse espanso, resta un file
 # leggibile che dice dove andare, invece di un file quasi vuoto che rompe l'ingresso senza
@@ -1864,12 +1704,19 @@ if __name__ == "__main__":
 # È tutta la differenza: `CLAUDE.md`, `AGENTS.md` e le skill dipendono dall'aderenza
 # dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 #
-# Gli **script** degli hook sono versionati; il loro **aggancio** no. Il comando che li
-# invoca contiene l'interprete, che cambia da macchina a macchina, quindi sta nella
-# configurazione locale (`.claude/settings.local.json`, ignorata da git) e lo scrive
-# l'inizializzatore su ogni macchina. Non spostarlo nella configurazione versionata "perché
-# valga ovunque": arriverebbe sbagliato sull'altra piattaforma, e se resta anche nel file
-# locale gli hook girano due volte.
+# Gli **script** degli hook sono versionati e **uguali per ogni agente**
+# (`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
+# interprete e percorso, che cambiano da macchina a macchina, quindi sta nella
+# configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
+# ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
+# arriverebbe sbagliato su un'altra macchina, e se resta anche nel file locale gli hook
+# girano due volte.
+#
+# Gli script usano solo cio' che gli agenti supportati hanno in comune: all'avvio, testo su
+# stdout; a fine turno, uscita `0` con `{"decision": "block", "reason": "..."}` su stdout.
+# **Non usare l'uscita `2` per bloccare**: Codex 0.154.0 la tratta come errore e chiude il
+# turno comunque, mentre la decisione JSON blocca sia lì sia su Claude Code 2.1.274
+# (provato il 2026-09-17, su Windows).
 #
 # **`SessionStart`** — inietta in contesto, a ogni avvio (`/clear` e compattazione compresi),
 # le sezioni volatili: cosa è bloccato, cosa è rotto, il cruscotto dell'evidenza, e un avviso
@@ -1879,8 +1726,8 @@ if __name__ == "__main__":
 #
 # **`Stop`** — scatta **alla fine di ogni risposta**, non a fine sessione: è il punto che
 # viene frainteso più spesso, ed è anche il motivo per cui funziona. Se il codice è cambiato
-# e il documento di stato è intatto, esce `2` e il turno non si chiude finché non è stato
-# gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
+# e il documento di stato è intatto, chiede di non chiudere e il turno continua finché non è
+# stato gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
 # non salta nessun controllo: è già avvenuto a ogni turno precedente.
 #
 # **Non usare un hook di fine sessione.** Non può bloccare, il suo output viene ignorato, e
@@ -1899,7 +1746,8 @@ if __name__ == "__main__":
 #   schermo**, quindi l'utente non vede nulla neanche quando funziona perfettamente. È
 #   l'errore che ho commesso, e ha portato l'utente a credere rotto un hook che girava.
 # - **Blocca una volta sola per sessione.** `Stop` scattando a ogni turno diventa martellante
-#   se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci.
+#   se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci; e
+#   non bloccare un turno che l'agente ha gia' prolungato per un hook (`stop_hook_active`).
 #
 # ## Procedura
 #
@@ -1962,7 +1810,7 @@ if __name__ == "__main__":
 # - **Archivi storici** (piani, specifiche, note di sessioni passate): lasciali com'erano,
 #   riferimenti vecchi inclusi. Riscriverli falsifica il registro di cosa si sapeva e quando.
 # - **L'import va verificato davvero**, in una sessione nuova. In Claude Code lo dice
-#   `/memory`, che elenca i file caricati. **Non puoi provarlo dalla sessione in cui lo
+#   `/context`, alla voce dei file di memoria caricati. **Non puoi provarlo dalla sessione in cui lo
 #   scrivi**: dillo all'utente invece di dichiararlo funzionante.
 # - **Non confondere «l'utente non lo vede» con «non funziona».** Vale per tutto ciò che un
 #   hook inietta nel contesto: è per l'agente, non per lo schermo. Quando spieghi all'utente
@@ -2087,6 +1935,281 @@ if __name__ == "__main__":
 # # che puntano nel workspace di chi li ha scritti. Si indicano per nome di file.
 # # "nome-file.md" = "da chi, e perche' e' conservato cosi'"
 #
+# ---- AGENT-CONTEXT-FILE: scripts/agent_hooks.py ----
+# #!/usr/bin/env python3
+# # -*- coding: utf-8 -*-
+# """
+# agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
+#
+#     python scripts/agent_hooks.py session-start --agent <nome>
+#     python scripts/agent_hooks.py stop          --agent <nome>
+#
+# Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
+# parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
+# configurazione LOCALE di ciascun agente. Qui non c'e' niente di specifico di un agente:
+# il protocollo usato e' quello che gli agenti supportati hanno in comune.
+#
+#   session-start  stampa su stdout le sezioni volatili di status.md. Lo stdout di questo
+#                  evento entra nel contesto dell'agente, NON a schermo: l'utente non vede
+#                  niente ed e' normale.
+#   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
+#                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
+#                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
+#
+# Perche' JSON e non l'uscita 2: provato il 2026-09-17 su Windows, Codex 0.154.0 tratta
+# l'uscita 2 di Stop come un errore e chiude comunque; la decisione JSON con uscita 0
+# blocca sia su Codex 0.154.0 sia su Claude Code 2.1.274.
+#
+# FAIL-OPEN: qualunque errore interno esce 0 senza stampare. Un hook rotto deve degradare
+# ad "assente", mai a "bloccante". Per questo esiste la traccia .git/agent-hooks.log: e'
+# l'unico modo di sapere se gli hook girano.
+# """
+#
+# import io
+# import json
+# import re
+# import sys
+# from datetime import datetime
+# from pathlib import Path
+#
+# # Importare context_core non deve lasciare __pycache__ nel repository.
+# sys.dont_write_bytecode = True
+#
+# AGENT = "?"
+#
+#
+# def setup_stdout() -> None:
+#     """La console di Windows non e' UTF-8: senza questo, una freccia uccide l'hook."""
+#     try:
+#         if hasattr(sys.stdout, "buffer"):
+#             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
+#                                           errors="replace")
+#     except Exception:
+#         pass
+#
+#
+# def load_core():
+#     try:
+#         sys.path.insert(0, str(Path(__file__).resolve().parent))
+#         import context_core
+#         return context_core
+#     except Exception:
+#         return None
+#
+#
+# core = load_core()
+#
+#
+# def log(event: str, outcome: str) -> None:
+#     """
+#     Una riga per esecuzione, anche per gli esiti silenziosi: un hook fail-open rotto e
+#     un hook assente sono altrimenti indistinguibili.
+#     """
+#     try:
+#         if core is None:
+#             return
+#         root = core.repo_root()
+#         g = core.git_dir(root) if root else None
+#         if g is None:
+#             return
+#         line = (f"{datetime.now():%Y-%m-%d %H:%M:%S}  {AGENT:<7} {event:<13} "
+#                 f"{outcome}\n")
+#         with open(g / "agent-hooks.log", "a", encoding="utf-8") as fh:
+#             fh.write(line)
+#     except Exception:
+#         pass
+#
+#
+# def read_input() -> dict:
+#     """Il JSON che l'agente passa su stdin. Malformato o assente vale come vuoto."""
+#     try:
+#         raw = sys.stdin.read()
+#         data = json.loads(raw) if raw.strip() else {}
+#         return data if isinstance(data, dict) else {}
+#     except Exception:
+#         return {}
+#
+#
+# # ------------------------------------------------------------------------ session-start
+#
+# def session_start(data: dict) -> int:
+#     if core is None:
+#         log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
+#         return 0
+#     root = core.repo_root()
+#     if root is None:
+#         return 0
+#
+#     STATUS_FILE = core.STATUS_FILE
+#     status_path = root / STATUS_FILE
+#     if not status_path.is_file():
+#         log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
+#         return 0
+#
+#     status = status_path.read_text(encoding="utf-8", errors="replace")
+#     cfg, _ = core.load_config(root)
+#     specs, labels = core.code_scope(root, cfg)
+#     where = ", ".join(labels)
+#
+#     out = [
+#         "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
+#         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, rileggi il file intero.",
+#         "",
+#     ]
+#
+#     # --- Le sezioni che il documento stesso dichiara volatili ---
+#     blocks = core.extract_marked(status)
+#     if blocks:
+#         out.append("\n\n".join(blocks))
+#         out.append("")
+#     else:
+#         out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
+#                    f"nessuna sezione dichiarata volatile.)")
+#         out.append("")
+#
+#     # --- Cruscotto dei livelli di evidenza ---
+#     levels = core.count_levels(root)
+#     out.append("Evidenza nei documenti di contesto: " +
+#                "  ".join(f"{k}={v}" for k, v in levels.items()))
+#
+#     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
+#     sha = core.read_marker(status)
+#     if sha:
+#         ok, since = core.commits_since(root, sha, specs)
+#         if ok and since:
+#             out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
+#                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
+#                        f"riconciliato. Potrebbe dire cose non piu' vere.")
+#     elif core.head_sha(root) is not None:
+#         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
+#                    f"la sua freschezza non e' misurabile.")
+#
+#     # --- Lavoro non registrato rimasto da una sessione precedente ---
+#     if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
+#         out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
+#                    f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
+#                    f"precedente mai registrato: valuta se va annotato.")
+#
+#     out += ["", "Verifica che i documenti dicano ancora il vero: "
+#                 "python scripts/docs_lint.py",
+#             "=== fine stato del progetto ==="]
+#
+#     text = "\n".join(out)
+#     print(text)
+#     log("SessionStart", f"iniettati {len(text)} caratteri "
+#                         f"(fonte={data.get('source', '?')}, "
+#                         f"assunto={levels.get('assunto', 0)})")
+#     return 0
+#
+#
+# # -------------------------------------------------------------------------------- stop
+#
+# MESSAGE = """Il codice e' cambiato e {status} e' intatto.
+#
+#   - {reasons}
+#
+# Prima di chiudere: aggiorna {status} (difetto notato, verifica saltata, decisione
+# rimandata, stato del lavoro), oppure dichiara esplicitamente all'utente perche' non
+# serve. Se hai riconciliato il documento con il codice, riporta anche il marcatore
+# context-verified-at a HEAD.
+#
+# Questo controllo blocca una volta sola per sessione: non ripartira'."""
+#
+#
+# def stop(data: dict) -> int:
+#     if core is None:
+#         log("Stop", "scripts/context_core.py non trovato: nessun controllo")
+#         return 0
+#     # L'agente ha gia' continuato una volta per un hook di fine turno: non si insiste.
+#     if data.get("stop_hook_active") is True:
+#         log("Stop", "ok (turno gia' prolungato da un hook)")
+#         return 0
+#     root = core.repo_root()
+#     if root is None:
+#         return 0
+#     g = core.git_dir(root)
+#     if g is None:
+#         return 0
+#
+#     STATUS_FILE = core.STATUS_FILE
+#     sid = str(data.get("session_id") or "ignota")
+#     safe = re.sub(r"[^A-Za-z0-9_-]", "", sid) or "ignota"
+#     flag = g / f"docs-status-nag-{safe}.flag"
+#     if flag.exists():
+#         log("Stop", "ok (gia' segnalato in questa sessione)")
+#         return 0
+#
+#     if core.dirty(root, [STATUS_FILE]):
+#         log("Stop", f"ok ({STATUS_FILE} gia' toccato)")
+#         return 0
+#
+#     cfg, _ = core.load_config(root)
+#     specs, labels = core.code_scope(root, cfg)
+#     if not specs:
+#         log("Stop", "ok (nessun codice nel repository, per ora)")
+#         return 0
+#     where = ", ".join(labels)
+#
+#     reasons = []
+#     changed = core.dirty(root, specs)
+#     if changed:
+#         files = ", ".join(re.sub(r"^\s*\S+\s+", "", l) for l in changed.splitlines())
+#         reasons.append(f"modifiche non committate: {files}")
+#
+#     status_path = root / STATUS_FILE
+#     if status_path.is_file():
+#         sha = core.read_marker(status_path.read_text(encoding="utf-8", errors="replace"))
+#         if sha:
+#             ok, since = core.commits_since(root, sha, specs)
+#             if ok and since:
+#                 reasons.append(f"{len(since)} commit sul codice ({where}) dopo {sha}, "
+#                                f"il punto a cui {STATUS_FILE} dichiara di essere "
+#                                f"riconciliato")
+#
+#     if not reasons:
+#         log("Stop", "ok (codice invariato dal marcatore)")
+#         return 0
+#
+#     flag.write_text("", encoding="utf-8")
+#     log("Stop", "BLOCCATO: " + "; ".join(reasons))
+#     print(json.dumps({"decision": "block",
+#                       "reason": MESSAGE.format(status=STATUS_FILE,
+#                                                reasons="\n  - ".join(reasons))},
+#                      ensure_ascii=False))
+#     return 0
+#
+#
+# # -------------------------------------------------------------------------------- main
+#
+# EVENTS = {"session-start": ("SessionStart", session_start), "stop": ("Stop", stop)}
+#
+#
+# def main(argv) -> int:
+#     global AGENT
+#     args = list(argv)
+#     if "--agent" in args:
+#         i = args.index("--agent")
+#         AGENT = args[i + 1] if i + 1 < len(args) else "?"
+#         del args[i:i + 2]
+#     if not args or args[0] not in EVENTS:
+#         log("?", f"evento sconosciuto: {args[:1]}")
+#         return 0
+#     name, fn = EVENTS[args[0]]
+#     try:
+#         return fn(read_input())
+#     except Exception as exc:                      # fail-open, sempre
+#         log(name, f"ERRORE INTERNO {type(exc).__name__} (fail-open, nessun blocco)")
+#         return 0
+#
+#
+# if __name__ == "__main__":
+#     setup_stdout()
+#     try:
+#         code = main(sys.argv[1:])
+#     except Exception:
+#         code = 0
+#     sys.exit(0 if code is None else code)
+#
 # ---- AGENT-CONTEXT-FILE: scripts/context_core.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
@@ -2123,7 +2246,7 @@ if __name__ == "__main__":
 # # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
 # # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # # i nomi che il lint cerca.
-# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py",
+# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
 #                  "scripts/agent_context_version.json"}
 # # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 # MANAGED_NAMES = {"agent_context_init.py"}
