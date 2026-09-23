@@ -18,7 +18,10 @@ script installa.
 ## Uso in breve
 
 Serve **git**, e **Python 3.14** o successivo raggiungibile come `python` su Windows e
-`python3` altrove: è il nome che lo script scrive negli hook.
+`python3` altrove: è il nome che lo script scrive negli hook. Il minimo tecnico è 3.11,
+perché lint e hook leggono `config.toml` con `tomllib`, ma è provato solo con 3.14. Il
+Python di sistema di macOS (3.9) non basta. La diagnosi dovrebbe segnalarlo, ma questo
+controllo non è ancora stato provato su un Mac.
 
 Copia `agent_context_init.py` nel repository e lancialo da lì dentro:
 
@@ -128,11 +131,22 @@ Aggiorna i file gestiti e non tocca i semi. Da una versione che teneva la taratu
 gli script, le liste di eccezioni vengono **migrate** in `config.toml` al primo giro, prima
 che `--force` riscriva il lint. Guarda comunque il `git diff` prima di committare.
 
-Una differenza da conoscere: la versione vecchia sorvegliava solo le directory rilevate il
-giorno dell'installazione, e il lint solo `src` e `drivers`. Adesso è sorvegliato tutto il
-codice, compresi script e file di build nella radice. Il lint e l'hook di fine turno
-possono quindi segnalare commit che prima ignoravano; se non sono codice per te, vanno in
-`[code] exclude`.
+Una differenza da conoscere: la versione vecchia sorvegliava solo le directory scritte nel
+lint (`CODE_DIRS`, `CODE_FILES`), mentre adesso il codice si rileva da solo. Quello che la
+rilevazione prende e il lint vecchio lasciava fuori finisce in `[code] exclude`, perché
+spesso era escluso di proposito (per esempio un archivio congelato che contiene simboli
+banditi). Lo script lo elenca: se una di quelle voci è codice, toglila.
+
+Dalla versione precedente lo script toglie anche `.claude/hooks/`, compresi i `.pyc`, e
+segnala le altre copie di `agent_context_init.py` nel repository diverse da quella che
+stai lanciando. Una copia versionata nel progetto, tenuta per agganciare gli hook sui
+cloni, va sostituita con quella nuova. Il prompt stampato alla fine chiede all'agente di
+**allineare** il contesto esistente, non di riscriverlo.
+
+Provato il 2026-09-23 su Windows su un progetto vero con il contesto della versione
+precedente. Dopo l'aggiornamento il lint esce pulito, e in una sessione di Claude Code
+(`claude -p`) sono partiti l'hook di avvio e quello di fine turno. Codex non l'ho provato
+su quel progetto.
 
 ## Quale versione è installata
 

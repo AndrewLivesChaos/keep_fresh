@@ -62,9 +62,9 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-17T13:33:58',
+    'packed_at': '2026-09-23T14:05:57',
     'source': 'context_script',
-    'commit': '3bddc13',
+    'commit': '0fb000c',
     'payload_dirty': False,
     'payload_sha': 'c17c5c6f68c7',
 }
@@ -168,6 +168,17 @@ Fai girare `python scripts/docs_lint.py` e mostrami l'output vero prima di dichi
 concluso. Al primo giro sara' rumoroso: correggi prima i CONTROLLI, poi i documenti. Una
 segnalazione che descrive un difetto vero — un riferimento a una rinomina mai fatta, un
 simbolo sparito — non va messa a tacere: va registrata come lavoro aperto."""
+
+# Aggiunta al prompt quando il repository aveva un contesto della versione precedente.
+# Senza, l'agente legge "partono vuote" e "esegui la guida" come un lavoro da rifare da
+# zero, e i documenti continuano a descrivere hook e script che non esistono piu'.
+PROMPT_UPGRADE = """Il contesto esiste gia', scritto con una versione precedente di questo impianto:
+non ricominciare da zero, allinealo alla guida attuale. config.toml contiene la taratura
+migrata dal lint precedente: sostituisci i motivi generici con quelli veri e togli le voci
+che non riguardano questo progetto. Togli dai documenti i riferimenti agli hook in
+.claude/hooks/ e a ogni file che non esiste piu' (il lint li segnala), e descrivi gli hook
+comuni in scripts/agent_hooks.py e il loro aggancio locale per ogni agente. La
+cronologia di status.md non si riscrive: le voci superate si barrano."""
 
 
 # --------------------------------------------------------------------------- payload
@@ -466,11 +477,52 @@ def smoke_test() -> bool:
         r2 = run(*init)
         step("--force riallinea e la segnalazione sparisce",
              r.returncode == 0 and "non coincidono" not in r2.stdout, r2.stdout[-600:])
+
+        # 5. Un repository con il contesto della versione precedente, com'era
+        # un progetto: lint con la taratura e CODE_DIRS scritti dentro, un archivio
+        # escluso di proposito che contiene un simbolo bandito, hook in .claude/hooks/
+        # con i loro compilati committati, una copia vecchia dell'inizializzatore.
+        # Un repository nuovo, non la stessa cartella svuotata: su Windows gli oggetti di
+        # git sono in sola lettura e rmtree li lascia dove sono.
+        primo = tmp
+        tmp = Path(tempfile.mkdtemp(prefix="agent-context-smoke-"))
+        run("git", "init", "-q", ".")
+        for rel, text in {
+            "src/app.ts": "export const x = 1\n",
+            "archivio/proto.html": "<p>blurb</p>\n",
+            "scripts/docs_lint.py": (f"{TUNING_BEGIN}\nCODE_DIRS = ['src']\nCODE_FILES = []\n"
+                                     f"EXPECTED_ABSENT = {{'blurb': 'ritirato'}}\n"
+                                     f"{TUNING_END}\n"),
+            "scripts/agent_context_init.py": "# copia vecchia, senza timbro\n",
+            ".claude/hooks/hooklib.py": "\n",
+            ".claude/hooks/session_start.py": "\n",
+            ".claude/hooks/stop_check.py": "\n",
+            ".claude/hooks/__pycache__/hooklib.cpython-314.pyc": "x",
+        }.items():
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_text(text, encoding="utf-8")
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "versione precedente")
+        r = run(*init, "--force")
+        step("aggiornamento dalla versione precedente: esce 0", r.returncode == 0,
+             r.stderr[-800:])
+        cfg = (tmp / CONFIG_FILE).read_text(encoding="utf-8")
+        step("l'archivio escluso dal lint precedente resta escluso",
+             '"archivio/"' in cfg and '"blurb"' in cfg, cfg[:600])
+        step(".claude/hooks/ tolta del tutto, compilati compresi",
+             not (tmp / ".claude" / "hooks").exists(), r.stdout[-600:])
+        step("la copia vecchia dell'inizializzatore viene segnalata",
+             "scripts/agent_context_init.py e' un'altra copia" in r.stdout, r.stdout[-800:])
+        step("il prompt chiede di allineare, non di rifare",
+             "Il contesto esiste gia'" in r.stdout, r.stdout[-800:])
+        lint("aggiornamento dalla versione precedente")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        for d in {tmp, locals().get("primo", tmp)}:
+            shutil.rmtree(d, ignore_errors=True)
 
     if not failures:
-        print("Prova a vuoto: repo vuoto, primo commit e codice comparso dopo, tutto ok.")
+        print("Prova a vuoto: repo vuoto, primo commit, codice comparso dopo e "
+              "aggiornamento dalla versione precedente, tutto ok.")
         return True
     print("\nPROVA A VUOTO FALLITA — cio' che questo script genera non si comporta come\n"
           "dovrebbe. Payload scritto ma da correggere:", file=sys.stderr)
@@ -625,8 +677,40 @@ def legacy_tuning(root: Path, payload: dict) -> dict:
     return found
 
 
-def render_config(seed: str, tables: dict) -> str:
+def legacy_code_scope(root: Path):
+    """
+    Cosa considerava codice un lint della versione precedente: CODE_DIRS e CODE_FILES,
+    scritti a mano. None se il lint non e' di quella versione.
+
+    Il lint nuovo il codice lo rileva da solo, e rileva anche quello che il vecchio
+    escludeva DI PROPOSITO — un archivio congelato, un export — tacendo le ragioni.
+    Senza questo confronto la migrazione perde l'esclusione e il primo giro di lint
+    accusa l'archivio.
+    """
+    try:
+        text = (root / "scripts" / "docs_lint.py").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if "context_core" in text:
+        return None
+    names = set()
+    for const in ("CODE_DIRS", "CODE_FILES"):
+        m = re.search(rf"^{const}\s*=\s*(\[.*?\]|\{{.*?\}})", text, re.S | re.M)
+        if not m:
+            continue
+        try:
+            names |= {str(v).strip("/") for v in ast.literal_eval(m.group(1))}
+        except (ValueError, SyntaxError):
+            return None
+    return names or None
+
+
+def render_config(seed: str, tables: dict, exclude: list = ()) -> str:
     """Scrive le voci migrate sotto le rispettive tabelle del seme, dopo i commenti."""
+    if exclude:
+        voci = "".join(f"    {json.dumps(e, ensure_ascii=False)},  # non era codice per "
+                       f"il lint della versione precedente\n" for e in exclude)
+        seed = seed.replace("\nexclude = []\n", f"\nexclude = [\n{voci}]\n", 1)
     lines = seed.split("\n")
     for table, entries in tables.items():
         header = f"[lint.{table}]"
@@ -884,6 +968,11 @@ def retire_legacy_hooks(root: Path, force: bool, dry: bool) -> str:
     presenti = [rel for rel in LEGACY_HOOK_FILES if (root / rel).is_file()]
     if not presenti:
         return ""
+    # I compilati degli stessi script: senza toglierli la cartella non resta vuota, e
+    # capita che siano stati anche committati.
+    cache = root / ".claude" / "hooks" / "__pycache__"
+    compilati = [p for p in cache.glob("*.pyc")
+                 if p.name.split(".", 1)[0] in {Path(r).stem for r in LEGACY_HOOK_FILES}]
     for agent in AGENTS.values():
         p = root / agent["config"]
         try:
@@ -897,15 +986,17 @@ def retire_legacy_hooks(root: Path, force: bool, dry: bool) -> str:
         return (f"{', '.join(presenti)} non servono piu' (gli hook ora sono in "
                 f"{HOOKS_SCRIPT}): --force li toglie")
     if not dry:
-        for rel in presenti:
-            (root / rel).unlink()
-        d = root / ".claude" / "hooks"
-        try:
-            if d.is_dir() and not any(d.iterdir()):
-                d.rmdir()
-        except OSError:
-            pass
-    return f"tolti {', '.join(presenti)}: gli hook ora sono in {HOOKS_SCRIPT}"
+        for p in [root / rel for rel in presenti] + compilati:
+            p.unlink()
+        for d in (cache, root / ".claude" / "hooks"):
+            try:
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
+    tolti = presenti + ([f"{len(compilati)} compilati in .claude/hooks/__pycache__/"]
+                        if compilati else [])
+    return f"tolti {', '.join(tolti)}: gli hook ora sono in {HOOKS_SCRIPT}"
 
 
 CMD_RE = re.compile(r'"command"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
@@ -920,7 +1011,10 @@ def interpreter_works(nome: str) -> bool:
     "esiste nel PATH?" direbbe di si' e sbaglierebbe.
     """
     try:
-        r = subprocess.run(nome.split() + ["-c", "pass"], capture_output=True,
+        # Non basta che parta: lint e hook leggono config.toml con tomllib, che esiste
+        # da Python 3.11. Un python3 di sistema piu' vecchio (macOS ha la 3.9) parte e
+        # poi fallisce sull'import, e gli hook fail-open non lo dicono.
+        r = subprocess.run(nome.split() + ["-c", "import tomllib"], capture_output=True,
                            text=True, encoding="utf-8", errors="replace")
         return r.returncode == 0
     except OSError:
@@ -1054,15 +1148,52 @@ def diagnose(root: Path, interp: str) -> list:
                 if not provati[nome]:
                     problemi.append(
                         f"gli hook invocano `{nome}`, che su questa macchina non esegue "
-                        f"niente (provato: `{nome} -c pass`).\n"
-                        f"     Sono fail-open: non protesterebbero, semplicemente non "
-                        f"girerebbero. Installalo con questo nome, oppure\n     "
-                        f"riscrivi a mano il comando con l'interprete che usi.")
+                        f"niente o e' piu' vecchio di Python 3.11\n"
+                        f"     (provato: `{nome} -c \"import tomllib\"`). Sono fail-open: "
+                        f"non protesterebbero, semplicemente non\n     girerebbero. "
+                        f"Installa un Python 3.11 o piu' recente raggiungibile con questo "
+                        f"nome,\n     oppure riscrivi a mano il comando con l'interprete "
+                        f"che usi.")
         if name == "codex" and codex_trusted(root) is False:
             problemi.append(f"{label}: il progetto non risulta fidato in "
                             f"~/.codex/config.toml, e senza fiducia Codex salta gli hook\n"
                             f"     del repository senza avvisare.\n     {agent['steps']}.")
+    problemi += stale_copies(root)
     return problemi
+
+
+def stale_copies(root: Path) -> list:
+    """
+    Altre copie dell'inizializzatore nel repository, diverse da questa. Un progetto ne
+    tiene una versionata per agganciare gli hook sui cloni: dopo un aggiornamento fatto
+    con una copia piu' nuova, quella resta indietro e il prossimo clone installa lei.
+    """
+    me = Path(__file__).resolve()
+    vecchie = []
+    # Solo i file che git conosce: node_modules e simili non contano, e sono lenti.
+    elenco = git(root, "ls-files", "--cached", "--others", "--exclude-standard",
+                 "--", "*agent_context_init.py")
+    for rel in filter(None, elenco.splitlines()):
+        p = root / rel
+        if not p.is_file() or p.resolve() == me:
+            continue
+        try:
+            head, _ = split_on_sentinel(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            head = None
+        m = STAMP_RE.search(head or "")
+        try:
+            suo = ast.literal_eval(m.group(0).split("STAMP = ", 1)[1]
+                                   .rsplit("# ==== TIMBRO (fine)", 1)[0].strip())
+        except (AttributeError, IndexError, ValueError, SyntaxError):
+            suo = None
+        if suo != STAMP:
+            vecchie.append(
+                f"{rel} e' un'altra copia dell'inizializzatore, diversa da questa: "
+                f"{describe_stamp(suo) if suo else 'senza timbro, versione precedente'}.\n"
+                f"     Chi la lancia su un clone installa quella. Sostituiscila con questa "
+                f"copia, o toglila se non serve.")
+    return vecchie
 
 
 def version_drift(root: Path, payload: dict) -> list:
@@ -1181,7 +1312,14 @@ def main() -> int:
         print("MODALITA' DRY-RUN: non viene scritto niente.")
     print()
 
-    core = payload_core(payload)
+    # Un contesto della versione precedente va riconosciuto PRIMA di scrivere: dopo,
+    # --force ha gia' sostituito il lint e tolto gli hook vecchi.
+    old_lint = root / "scripts" / "docs_lint.py"
+    precedente = (any((root / rel).is_file() for rel in LEGACY_HOOK_FILES)
+                  or (old_lint.is_file() and "context_core" not in
+                      old_lint.read_text(encoding="utf-8", errors="replace")))
+
+    core, labels = payload_core(payload), []
     if core is not None:
         cfg, _ = core.load_config(root)
         files = core.code_files(root, cfg)
@@ -1196,18 +1334,22 @@ def main() -> int:
 
     # La taratura di una versione precedente va letta PRIMA che --force riscriva il lint.
     migrated = {} if (root / CONFIG_FILE).exists() else legacy_tuning(root, payload)
+    # Cio' che la rilevazione prende e il lint precedente escludeva. Si continua a
+    # escluderlo: e' il comportamento che il progetto aveva, e lo si dice.
+    old_scope = None if (root / CONFIG_FILE).exists() else legacy_code_scope(root)
+    excluded = [l for l in labels if l.rstrip("/") not in old_scope] if old_scope else []
 
     w = Writer(root, args.force, args.dry_run)
     for rel, content in payload.items():
-        if rel == CONFIG_FILE and migrated:
-            rendered = render_config(content, migrated)
+        if rel == CONFIG_FILE and (migrated or excluded):
+            rendered = render_config(content, migrated, excluded)
             try:
                 tomllib.loads(rendered)
                 content = rendered
             except tomllib.TOMLDecodeError as exc:
                 print(f"  ATTENZIONE: la taratura precedente non e' migrabile ({exc}): "
                       f"config.toml parte vuoto, riportala a mano.")
-                migrated = {}
+                migrated, excluded = {}, []
         w.put(rel, content, seed=rel in SEED_FILES)
     if STAMP:
         # Segue la regola dei file gestiti: se i file non vengono aggiornati, nemmeno
@@ -1234,6 +1376,11 @@ def main() -> int:
     if migrated and CONFIG_FILE in w.written:
         n = sum(len(v) for v in migrated.values())
         print(f"  migrate  {n} voci di taratura dal lint precedente in {CONFIG_FILE}")
+    if excluded and CONFIG_FILE in w.written:
+        print(f"  migrate  esclusi dal codice, come nel lint precedente: "
+              f"{', '.join(excluded)}\n"
+              f"           Se uno di questi e' codice, toglilo da [code] exclude in "
+              f"{CONFIG_FILE}.")
     if status_existed:
         fatto = add_marker(root, args.dry_run)
         if fatto:
@@ -1266,16 +1413,22 @@ def main() -> int:
     print("\n" + "=" * 74)
     print("Fatta la meccanica. Il contesto lo deve ancora scrivere l'agente.")
     print("=" * 74)
-    print("""
+    taratura = ("parte con quanto migrato dal lint precedente: va controllata"
+                if (migrated or excluded) and CONFIG_FILE in w.written
+                else "parte vuota di\nproposito")
+    print(f"""
 Non devi ritarare niente a mano. Dove sta il codice lo rilevano il lint e gli hook a
-ogni esecuzione. La taratura di dominio sta in docs/context/config.toml, parte vuota di
-proposito e si riempie guardando i falsi positivi del primo giro di lint: e' gia'
+ogni esecuzione. La taratura di dominio sta in docs/context/config.toml, {taratura}
+e si completa guardando i falsi positivi del primo giro di lint: e' gia'
 chiesto nel prompt qui sotto.
 
 1. Apri una sessione dell'agente e incollagli questo prompt:
 """)
     print("-" * 74)
     print(PROMPT)
+    if precedente:
+        print()
+        print(PROMPT_UPGRADE)
     if problemi:
         print()
         print("Inoltre l'inizializzatore ha lasciato aperti questi punti, sistemali:")
