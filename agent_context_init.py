@@ -62,9 +62,9 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-26T12:53:36',
+    'packed_at': '2026-09-26T13:10:31',
     'source': 'context_script',
-    'commit': '58e32c6',
+    'commit': '604fc58',
     'payload_dirty': False,
     'payload_sha': '3c3592141a1a',
 }
@@ -1269,7 +1269,7 @@ def ensure_gitignore(root: Path, dry: bool) -> str:
         return "gia' a posto"
     if not dry:
         with open(gi, "a", encoding="utf-8") as fh:
-            fh.write("\n# Agenti: aggancio degli hook, con interprete e percorsi di questa "
+            fh.write("\n# Agenti: aggancio degli hook, con l'interprete di questa "
                      "macchina\n")
             for l in add:
                 fh.write(l + "\n")
