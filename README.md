@@ -108,11 +108,16 @@ lettura (`blocked by policy`). In quelle condizioni non potrebbe nemmeno lanciar
 
 ## Se il repository passa da una macchina all'altra
 
-Il comando di un hook contiene interprete e percorso assoluto dello script, che sono fatti
-della macchina. Per questo gli hook si agganciano nei file locali degli agenti, che git non
-traccia, e non in quelli condivisi. **Su ogni macchina, dopo il clone, lancia lo script
-una volta** (e per Codex rifai fiducia e approvazione). Finché non lo fai, quel clone non
-ha hook. Lo stesso vale se sposti la cartella del repository: la diagnosi lo segnala.
+Il comando di un hook contiene il nome dell'interprete (`python` su Windows, `python3`
+altrove), che è un fatto della macchina. Per questo gli hook si agganciano nei file locali
+degli agenti, che git non traccia, e non in quelli condivisi. **Su ogni macchina, dopo il
+clone, lancia lo script una volta** (e per Codex rifai fiducia e approvazione). Finché non
+lo fai, quel clone non ha hook.
+
+Il comando non contiene percorsi: la radice del repository la trova git a ogni esecuzione,
+da qualunque sottocartella parta la sessione. Spostare o rinominare la cartella non rompe
+gli hook. Le versioni precedenti scrivevano il percorso assoluto dello script: rilanciando
+lo script, il comando viene riscritto, e la diagnosi segnala quelli rimasti.
 
 Dichiarare gli hook in tutti e due i file non è innocuo: girano due volte (misurato su
 Claude Code 2.1.269, Windows, 2026-09-11). Se il repository veniva da una versione vecchia

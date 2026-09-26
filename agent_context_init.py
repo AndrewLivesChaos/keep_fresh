@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-23T14:06:43',
+    'packed_at': '2026-09-26T12:45:48',
     'source': 'context_script',
-    'commit': 'ca243f7',
-    'payload_dirty': False,
-    'payload_sha': 'c17c5c6f68c7',
+    'commit': 'b204d1a',
+    'payload_dirty': True,
+    'payload_sha': '3c3592141a1a',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -441,10 +441,20 @@ def smoke_test() -> bool:
                         for e in cfg["hooks"][ev] for h in e["hooks"]]
             except (OSError, ValueError, KeyError, TypeError):
                 cmds = []
-            script = (tmp / HOOKS_SCRIPT).resolve().as_posix().lower()
-            step(f"{agent['label']}: due hook agganciati a {HOOKS_SCRIPT}",
-                 len(cmds) == 2 and all(script in c.lower() and f"--agent {name}" in c
+            step(f"{agent['label']}: due hook agganciati a {HOOKS_SCRIPT}, senza percorsi",
+                 len(cmds) == 2 and all(HOOK_BOOTSTRAP in c and f"--agent {name}" in c
+                                        and str(tmp) not in c and tmp.as_posix() not in c
                                         for c in cmds), f"{cmds}")
+            # Il comando agganciato, eseguito davvero da una sottocartella: e' cosi' che
+            # lo lancia Codex quando la sessione parte li'.
+            sub = tmp / "lib"
+            for c in cmds[:1]:
+                r = subprocess.run(c, shell=True, cwd=str(sub), capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace",
+                                   env=env, input='{"source":"startup"}')
+                step(f"{agent['label']}: il comando agganciato gira da una sottocartella",
+                     r.returncode == 0 and "Stato del progetto" in r.stdout,
+                     f"exit {r.returncode}: {r.stdout[-300:]}{r.stderr[-300:]}")
             step(f"{agent['label']}: {agent['config']} e' in .gitignore",
                  agent["config"] in gi)
         step("nessun __pycache__ lasciato nel repository",
@@ -771,7 +781,7 @@ OUR_SCRIPTS = ("agent_hooks.py", "session_start.py", "stop_check.py")
 # formato di configurazione vuol dire aggiungere una voce.
 #
 #   config  file LOCALE della macchina dove si dichiarano gli hook; va in .gitignore,
-#           perche' il comando contiene interprete e percorso assoluto
+#           perche' il comando contiene il nome dell'interprete (python o python3)
 #   shared  file di configurazione versionato dello stesso agente, da cui una versione
 #           precedente potrebbe aver lasciato i nostri hook (girerebbero due volte)
 #   steps   cosa deve fare l'utente su ogni macchina perche' gli hook partano davvero
@@ -791,7 +801,7 @@ AGENTS = {
         # senza approvazione, gli hook del repository vengono saltati SENZA avvisi.
         "steps": "Apri Codex in questo repository e accetta di fidarti del progetto; "
                  "poi, dentro Codex, `/hooks` e approva i due hook. Va rifatto se "
-                 ".codex/hooks.json cambia (per esempio se il repository si sposta)",
+                 ".codex/hooks.json cambia",
     },
 }
 
@@ -802,17 +812,27 @@ GITIGNORE_LINES = [a["config"] for a in AGENTS.values()]
 INTERP_RE = re.compile(r"^\s*(?:python3|python|py)(?:\s+-3)?(?=\s)")
 
 
-def hook_command(root: Path, interp: str, event_arg: str, agent: str) -> str:
+# Trova la radice del repository da dove parte la sessione ed esegue lo script da li'.
+# Niente sintassi di shell (niente $, %, backtick, virgolette doppie interne): lo stesso
+# testo gira in PowerShell, cmd, bash e sh. Se lo script manca, l'errore e' visibile
+# nell'agente: un aggancio rotto non deve sembrare un aggancio assente.
+HOOK_BOOTSTRAP = ("import runpy,subprocess,sys;"
+                  "r=subprocess.run(['git','rev-parse','--show-toplevel'],"
+                  "capture_output=True,text=True).stdout.strip();"
+                  f"r and runpy.run_path(r+'/{HOOKS_SCRIPT}',run_name='__main__')")
+
+
+def hook_command(interp: str, event_arg: str, agent: str) -> str:
     """
-    Percorso ASSOLUTO dello script. Il file di configurazione e' locale alla macchina,
-    quindi un percorso assoluto non viaggia; ed e' l'unica forma che regge ovunque:
-    Codex esegue il comando dalla cartella in cui e' partita la sessione, che puo' essere
-    una sottocartella, e su Windows lo esegue in PowerShell (provato il 2026-09-17), dove
-    una variabile scritta come $NOME non e' una variabile d'ambiente. Barre in avanti:
-    Python e tutte le shell le accettano anche su Windows.
+    Nessun percorso nel comando: la radice la trova git a ogni esecuzione, quindi spostare
+    o rinominare la cartella del repository non rompe l'aggancio. Un percorso relativo non
+    basterebbe: Codex esegue il comando dalla cartella in cui e' partita la sessione, che
+    puo' essere una sottocartella. E nemmeno $CLAUDE_PROJECT_DIR: su Windows Codex esegue
+    il comando in PowerShell (provato il 2026-09-17), dove $NOME non e' una variabile
+    d'ambiente. Provato il 2026-09-26 su Windows in PowerShell 5.1, cmd e Git Bash, da una
+    sottocartella.
     """
-    script = (root / HOOKS_SCRIPT).as_posix()
-    return f'{interp} "{script}" {event_arg} --agent {agent}'
+    return f'{interp} -c "{HOOK_BOOTSTRAP}" {event_arg} --agent {agent}'
 
 
 def hook_entry(command: str) -> dict:
@@ -893,13 +913,13 @@ def merge_agent(root: Path, name: str, interp: str, dry: bool) -> str:
 
     I nostri hook gia' presenti si riscrivono se invocano Python per nome: vale per un
     interprete di un'altra piattaforma (il repo e' stato clonato da un'altra macchina),
-    per un percorso che non e' piu' quello del repository (il repo si e' spostato) e per
+    per il percorso assoluto che le versioni precedenti scrivevano nel comando e per
     gli script di una versione precedente. Un comando con un interprete che non
     riconosciamo — un percorso assoluto, un virtualenv — e' una scelta di chi l'ha
     scritto: non si tocca, si segnala.
     """
     p = root / AGENTS[name]["config"]
-    wanted = {ev: hook_command(root, interp, arg, name) for ev, arg in HOOK_EVENTS}
+    wanted = {ev: hook_command(interp, arg, name) for ev, arg in HOOK_EVENTS}
 
     if not p.exists():
         cfg = {"hooks": {ev: [hook_entry(cmd)] for ev, cmd in wanted.items()}}
@@ -1125,8 +1145,8 @@ def diagnose(root: Path, interp: str) -> list:
                        for cmd in nostri):
                 problemi.append(f"{label}: l'hook {ev} non invoca {HOOKS_SCRIPT} in {rel}.")
         if git_tracks(root, rel):
-            problemi.append(f"{label}: {rel} e' tracciato da git, ma contiene interprete "
-                            f"e percorso di QUESTA macchina.\n     Toglilo dall'indice "
+            problemi.append(f"{label}: {rel} e' tracciato da git, ma contiene "
+                            f"l'interprete di QUESTA macchina.\n     Toglilo dall'indice "
                             f"(git rm --cached {rel}): e' gia' in .gitignore.")
         if agent["shared"] and (root / agent["shared"]).is_file():
             altro = (root / agent["shared"]).read_text(encoding="utf-8", errors="replace")
@@ -1134,12 +1154,17 @@ def diagnose(root: Path, interp: str) -> list:
                 problemi.append(f"{label}: i nostri hook compaiono ANCHE in "
                                 f"{agent['shared']}: girerebbero due volte.")
         for cmd in nostri:
-            # Il percorso dello script deve esistere: un repository spostato lascia
-            # agganci che puntano al vuoto, e gli hook fail-open non lo dicono.
+            # Le versioni precedenti scrivevano il percorso assoluto dello script: basta
+            # spostare la cartella perche' l'aggancio punti al vuoto.
             m = re.search(r'"([^"]+\.py)"', cmd)
             if m and not Path(m.group(1)).is_file():
                 problemi.append(f"{label}: un hook invoca {m.group(1)}, che non esiste. "
-                                f"Rilancia l'inizializzatore, che riscrive il percorso.")
+                                f"Rilancia l'inizializzatore, che riscrive il comando.")
+            elif m:
+                problemi.append(f"{label}: un hook invoca lo script con un percorso "
+                                f"assoluto, che si rompe se la cartella si sposta.\n"
+                                f"     Rilancia l'inizializzatore, che lo riscrive senza "
+                                f"percorsi.")
             # Agganciato non vuol dire eseguibile: l'interprete deve esistere QUI.
             n = INTERP_RE.match(cmd)
             nome = n.group(0).strip() if n else None
@@ -1520,12 +1545,13 @@ if __name__ == "__main__":
 # Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
 # guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
 # locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
-# per la macchina** (`python` su Windows, `python3` altrove) e il percorso assoluto dello
-# script. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
+# per la macchina** (`python` su Windows, `python3` altrove). Il comando non contiene
+# percorsi: la radice del repository la trova git a ogni esecuzione, quindi spostare la
+# cartella non rompe gli hook. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
 # prompt da incollare e i passi che restano all'utente per ciascun agente.
 #
-# **L'aggancio degli hook non è versionato, di proposito.** Il comando contiene interprete e
-# percorso, che sono fatti della macchina: in un file tracciato viaggerebbero con il repo e
+# **L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
+# dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbero con il repo e
 # arriverebbero sbagliati altrove, e gli hook, essendo fail-open, non girerebbero senza
 # dirlo. Per questo **non dichiarare mai gli hook in un file di configurazione versionato**,
 # come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due volte. Il
@@ -1859,7 +1885,7 @@ if __name__ == "__main__":
 #
 # Gli **script** degli hook sono versionati e **uguali per ogni agente**
 # (`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
-# interprete e percorso, che cambiano da macchina a macchina, quindi sta nella
+# il nome dell'interprete, che cambia da macchina a macchina, quindi sta nella
 # configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
 # ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
 # arriverebbe sbagliato su un'altra macchina, e se resta anche nel file locale gli hook

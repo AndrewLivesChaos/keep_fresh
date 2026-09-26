@@ -59,12 +59,13 @@ python agent_context_init.py             # scrive lint, hook, aggancio, scheletr
 Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
 guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
 locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
-per la macchina** (`python` su Windows, `python3` altrove) e il percorso assoluto dello
-script. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
+per la macchina** (`python` su Windows, `python3` altrove). Il comando non contiene
+percorsi: la radice del repository la trova git a ogni esecuzione, quindi spostare la
+cartella non rompe gli hook. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
 prompt da incollare e i passi che restano all'utente per ciascun agente.
 
-**L'aggancio degli hook non è versionato, di proposito.** Il comando contiene interprete e
-percorso, che sono fatti della macchina: in un file tracciato viaggerebbero con il repo e
+**L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
+dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbero con il repo e
 arriverebbero sbagliati altrove, e gli hook, essendo fail-open, non girerebbero senza
 dirlo. Per questo **non dichiarare mai gli hook in un file di configurazione versionato**,
 come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due volte. Il
@@ -398,7 +399,7 @@ dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 
 Gli **script** degli hook sono versionati e **uguali per ogni agente**
 (`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
-interprete e percorso, che cambiano da macchina a macchina, quindi sta nella
+il nome dell'interprete, che cambia da macchina a macchina, quindi sta nella
 configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
 ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
 arriverebbe sbagliato su un'altra macchina, e se resta anche nel file locale gli hook
