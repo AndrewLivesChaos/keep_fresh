@@ -34,7 +34,7 @@ EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
 # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # i nomi che il lint cerca.
 MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
-                 "scripts/agent_context_version.json"}
+                 "scripts/context_cost.py", "scripts/agent_context_version.json"}
 # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 MANAGED_NAMES = {"agent_context_init.py"}
 
@@ -286,3 +286,119 @@ def count_levels(root) -> dict:
         for lvl in EVIDENCE_LEVELS:
             counts[lvl] += len(re.findall(r"\*\*" + re.escape(lvl) + r"\*\*", text))
     return counts
+
+
+# ---------------------------------------------------------------------- l'iniezione all'avvio
+
+# Il tetto, in caratteri, dei blocchi session-start che l'hook inietta per intero. E' in
+# caratteri perche' l'hook non ha un tokenizer. Quanti token valgano davvero lo misura
+# scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
+# impianto un token ha fatto da 1,9 a 2,3 caratteri (stima dalle sessioni, 2026-09-26).
+DEFAULT_INJECTION_BUDGET = 8000
+# Nell'indice, la prima riga di ogni voce si taglia qui: basta a riconoscerla.
+INDEX_LINE_MAX = 160
+
+
+def injection_budget(cfg) -> int:
+    """Il tetto da [context] max_injection_chars in config.toml, o quello di default."""
+    val = config_table(cfg, "context").get("max_injection_chars")
+    if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+        return val
+    return DEFAULT_INJECTION_BUDGET
+
+
+def index_of(blocks) -> str:
+    """
+    L'indice dei blocchi: i titoli e la prima riga di ogni voce di primo livello. E' cio'
+    che si inietta quando i blocchi superano il tetto: l'agente vede cosa c'e' e dove, e
+    legge il dettaglio solo di cio' che gli serve.
+    """
+    out = []
+    for block in blocks:
+        for line in block.splitlines():
+            if re.match(r"^#{1,6}\s", line):
+                out.append(line.rstrip())
+            elif re.match(r"^(?:[-*]|\d+\.)\s", line):
+                text = line.rstrip()
+                if len(text) > INDEX_LINE_MAX:
+                    text = text[:INDEX_LINE_MAX - 1].rstrip() + "…"
+                out.append(text)
+        out.append("")
+    return "\n".join(out).strip()
+
+
+def build_injection(root, cfg=None):
+    """
+    Il testo che l'hook di avvio mette nel contesto dell'agente. Si costruisce qui, e non
+    nell'hook, perche' hook, lint e misura dei consumi ne vedano la stessa identica
+    versione. None se non c'e' status.md.
+
+    Torna un dizionario: text (il testo esatto), blocks_chars (quanto fanno i blocchi
+    session-start per intero), budget, reduced (True se i blocchi superano il tetto e al
+    loro posto va l'indice), levels (il cruscotto dell'evidenza).
+    """
+    root = Path(root)
+    status_path = root / STATUS_FILE
+    if not status_path.is_file():
+        return None
+    if cfg is None:
+        cfg, _ = load_config(root)
+    status = status_path.read_text(encoding="utf-8", errors="replace")
+    specs, labels = code_scope(root, cfg)
+    where = ", ".join(labels)
+    budget = injection_budget(cfg)
+
+    out = [
+        "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
+        f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, leggi in quel file la "
+        f"sezione che ti serve, non il file intero.",
+        "",
+    ]
+
+    # --- Le sezioni che il documento stesso dichiara volatili ---
+    blocks = extract_marked(status)
+    blocks_chars = sum(len(b) for b in blocks)
+    reduced = blocks_chars > budget
+    if not blocks:
+        out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
+                   f"nessuna sezione dichiarata volatile.)")
+    elif reduced:
+        out.append(f"ATTENZIONE: i blocchi session-start di {STATUS_FILE} fanno "
+                   f"{blocks_chars} caratteri, oltre il tetto di {budget}. Qui sotto c'e' "
+                   f"solo il loro indice: leggi nel file le voci che ti servono. Se lavori "
+                   f"su {STATUS_FILE}, riporta i blocchi sotto il tetto (vedi "
+                   f"docs/agent_docs_guide.md).")
+        out.append("")
+        out.append(index_of(blocks))
+    else:
+        out.append("\n\n".join(blocks))
+    out.append("")
+
+    # --- Cruscotto dei livelli di evidenza ---
+    levels = count_levels(root)
+    out.append("Evidenza nei documenti di contesto: " +
+               "  ".join(f"{k}={v}" for k, v in levels.items()))
+
+    # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
+    sha = read_marker(status)
+    if sha:
+        ok, since = commits_since(root, sha, specs)
+        if ok and since:
+            out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
+                       f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
+                       f"riconciliato. Potrebbe dire cose non piu' vere.")
+    elif head_sha(root) is not None:
+        out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
+                   f"la sua freschezza non e' misurabile.")
+
+    # --- Lavoro non registrato rimasto da una sessione precedente ---
+    if dirty(root, specs) and not dirty(root, [STATUS_FILE]):
+        out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
+                   f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
+                   f"precedente mai registrato: valuta se va annotato.")
+
+    out += ["", "Verifica che i documenti dicano ancora il vero: "
+                "python scripts/docs_lint.py",
+            "=== fine stato del progetto ==="]
+    return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
+            "reduced": reduced, "levels": levels}

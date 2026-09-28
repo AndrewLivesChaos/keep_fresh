@@ -11,9 +11,11 @@ parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.p
 configurazione LOCALE di ciascun agente. Qui non c'e' niente di specifico di un agente:
 il protocollo usato e' quello che gli agenti supportati hanno in comune.
 
-  session-start  stampa su stdout le sezioni volatili di status.md. Lo stdout di questo
-                 evento entra nel contesto dell'agente, NON a schermo: l'utente non vede
-                 niente ed e' normale.
+  session-start  stampa su stdout le sezioni volatili di status.md, o solo il loro indice
+                 se superano il tetto di config.toml (il testo lo costruisce
+                 context_core.build_injection). Lo stdout di questo evento entra nel
+                 contesto dell'agente, NON a schermo: l'utente non vede niente ed e'
+                 normale.
   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
@@ -102,65 +104,19 @@ def session_start(data: dict) -> int:
     if root is None:
         return 0
 
-    STATUS_FILE = core.STATUS_FILE
-    status_path = root / STATUS_FILE
-    if not status_path.is_file():
-        log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
+    inj = core.build_injection(root)
+    if inj is None:
+        log("SessionStart", f"nessun {core.STATUS_FILE}: niente da iniettare")
         return 0
 
-    status = status_path.read_text(encoding="utf-8", errors="replace")
-    cfg, _ = core.load_config(root)
-    specs, labels = core.code_scope(root, cfg)
-    where = ", ".join(labels)
-
-    out = [
-        "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
-        f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, rileggi il file intero.",
-        "",
-    ]
-
-    # --- Le sezioni che il documento stesso dichiara volatili ---
-    blocks = core.extract_marked(status)
-    if blocks:
-        out.append("\n\n".join(blocks))
-        out.append("")
-    else:
-        out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
-                   f"nessuna sezione dichiarata volatile.)")
-        out.append("")
-
-    # --- Cruscotto dei livelli di evidenza ---
-    levels = core.count_levels(root)
-    out.append("Evidenza nei documenti di contesto: " +
-               "  ".join(f"{k}={v}" for k, v in levels.items()))
-
-    # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
-    sha = core.read_marker(status)
-    if sha:
-        ok, since = core.commits_since(root, sha, specs)
-        if ok and since:
-            out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
-                       f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
-                       f"riconciliato. Potrebbe dire cose non piu' vere.")
-    elif core.head_sha(root) is not None:
-        out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
-                   f"la sua freschezza non e' misurabile.")
-
-    # --- Lavoro non registrato rimasto da una sessione precedente ---
-    if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
-        out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
-                   f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
-                   f"precedente mai registrato: valuta se va annotato.")
-
-    out += ["", "Verifica che i documenti dicano ancora il vero: "
-                "python scripts/docs_lint.py",
-            "=== fine stato del progetto ==="]
-
-    text = "\n".join(out)
+    text = inj["text"]
     print(text)
+    # Il formato di questa riga lo legge scripts/context_cost.py: "iniettati N caratteri".
+    ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
+               if inj["reduced"] else "")
     log("SessionStart", f"iniettati {len(text)} caratteri "
                         f"(fonte={data.get('source', '?')}, "
-                        f"assunto={levels.get('assunto', 0)})")
+                        f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
     return 0
 
 

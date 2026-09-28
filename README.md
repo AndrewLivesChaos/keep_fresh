@@ -58,6 +58,7 @@ rilancia lo script una volta: lo aggiunge da solo, se `status.md` è ancora lo s
 | `scripts/docs_lint.py` | gestito | scritto se manca; `--force` lo aggiorna |
 | `scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
 | `scripts/agent_hooks.py` | gestito | come sopra. Gli hook, uguali per ogni agente |
+| `scripts/context_cost.py` | gestito | come sopra. Quanto pesa il contesto, misurato |
 | `docs/agent_docs_guide.md` | gestito | come sopra. La guida che l'agente esegue |
 | `scripts/agent_context_version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
 | `docs/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
@@ -82,7 +83,46 @@ Le quattro tabelle `[lint.*]` partono **vuote di proposito**: sono lavoro di dom
 riempiono guardando i falsi positivi del primo giro di lint, con il motivo scritto accanto
 a ogni voce.
 
-Il file è un seme: nessun aggiornamento lo sovrascrive.
+`[context] max_injection_chars` è il tetto, in caratteri, di ciò che l'hook di avvio
+inietta per intero dai blocchi `session-start` di `status.md` (8000 di partenza; se la
+chiave manca vale lo stesso). Oltre il tetto l'hook inietta solo l'indice dei blocchi,
+titoli e prima riga di ogni voce, e il lint avvisa nel controllo 6. Il rimedio è
+accorciare i blocchi, non alzare il tetto.
+
+Il file è un seme: nessun aggiornamento lo sovrascrive. Un repository inizializzato prima
+del tetto non ha la sezione `[context]`: vale il tetto di partenza, e la si aggiunge a
+mano solo per cambiarlo.
+
+## Quanto pesa il contesto: `scripts/context_cost.py`
+
+```powershell
+python scripts/context_cost.py            # resoconto, non chiama nessun modello
+python scripts/context_cost.py misura     # misura esatta dei token fissi (circa $0,40)
+python scripts/context_cost.py --giorni 30 --anche C:\vecchio\percorso
+```
+
+Il resoconto legge le trascrizioni di Claude Code e i `token_count` di Codex delle sessioni
+aperte in questo repository, anche in una sua sottocartella o dove stava prima di essere
+spostato, se le trascrizioni sono nella cartella che Claude Code intesta al percorso di
+adesso. Per ogni sessione: chiamate, contesto all'avvio e massimo, token scritti e letti in
+cache, costo a listino API. Poi le letture dei documenti di contesto e l'andamento
+dell'iniezione, dalla traccia degli hook.
+
+Ogni numero è marcato **[misurato]**, cioè registrato dall'agente o dalla misura esatta, o
+**[stimato]**, cioè calcolato. Come lo si sa:
+
+- **token e costo delle sessioni:** confrontati con il costo che Claude Code calcola da
+  sé (`claude -p --output-format json`) su sessioni con scrittura e lettura in cache.
+  Coincidevano alla settima cifra decimale per Opus 5.5, Opus 5, Sonnet 5 e Haiku 4.5
+  (Windows 11, Claude Code 2.1.283, 2026-09-26/28). Per gli altri modelli del listino il
+  resoconto dice che il prezzo non è verificato. Per Codex dà i token, non i costi;
+- **`misura`:** lancia Claude Code headless in una copia usa e getta, vuota, con
+  `AGENTS.md`/`CLAUDE.md` e con l'iniezione, e sottrae i totali. La base misurata due
+  volte deve tornare identica, o la misura si ferma. Due misure della stessa copia hanno
+  dato 1.302 e 1.300 token per le istruzioni e 2.142 per l'iniezione in entrambe: la
+  precisione è di pochi token. Il risultato va in `.git/context-cost.json`, legato al
+  contenuto: se i file cambiano, il resoconto torna a stimare e lo dice;
+- **non provato:** macOS e Linux; Codex nella `misura`, che oggi usa solo Claude Code.
 
 ## Gli agenti
 

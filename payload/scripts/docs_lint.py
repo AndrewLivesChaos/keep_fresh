@@ -5,7 +5,7 @@ docs_lint — controlla che la documentazione per agenti dica ancora il vero.
 
 Non guarda il prodotto: guarda i documenti che lo descrivono.
 
-Cinque controlli:
+Sei controlli:
 
   1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
                         ricomparsi nel codice. La lista NON e' scritta qui: viene
@@ -19,6 +19,9 @@ Cinque controlli:
   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
   5. FRESCHEZZA       — quanti commit hanno toccato il codice dopo il punto in cui
                         status.md dichiara di essere riconciliato.
+  6. PESO             — quanto testo l'hook di avvio mette nel contesto a ogni
+                        sessione. Avvisa se i blocchi session-start superano il tetto
+                        di config.toml: in quel caso l'hook inietta solo l'indice.
 
 Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
 esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
@@ -463,6 +466,33 @@ def check_freshness(rep: Report):
 
 # ------------------------------------------------------------------------- main
 
+# ---------------------------------------------------------------- 6. peso all'avvio
+
+def check_weight(rep: Report):
+    """
+    Cosa entra nel contesto dell'agente a ogni avvio per opera di questo impianto. Solo
+    caratteri: il lint non ha un tokenizer, i token veri li misura context_cost.py.
+    """
+    inj = core.build_injection(ROOT, CONFIG)
+    if inj is None:
+        rep.note("  nessun status.md: l'hook di avvio non inietta niente")
+    else:
+        rep.note(f"  iniezione di avvio: {len(inj['text'])} caratteri  —  blocchi "
+                 f"session-start: {inj['blocks_chars']} su un tetto di {inj['budget']}")
+        if inj["reduced"]:
+            rep.warn("PESO", f"i blocchi session-start di {core.STATUS_FILE} fanno "
+                             f"{inj['blocks_chars']} caratteri, oltre il tetto di "
+                             f"{inj['budget']}: l'hook inietta solo il loro indice. "
+                             f"Riportali sotto il tetto: vedi la guida, «status.md "
+                             f"invecchia male».")
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        p = ROOT / name
+        if p.is_file():
+            rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
+                     f"(piu' cio' che importa)")
+    rep.note("  i token veri: python scripts/context_cost.py")
+
+
 CHECKS = [
     ("0. CONFIGURAZIONE  — cosa viene considerato codice", check_config),
     ("1. FEATURE BANDITE — simboli che non devono tornare", check_banned),
@@ -470,6 +500,7 @@ CHECKS = [
     ("3. EVIDENZA        — verificato/dedotto/assunto", check_evidence),
     ("4. LINK E ANCORE   — i rimandi risolvono", check_links),
     ("5. FRESCHEZZA      — status.md rispetto al codice", check_freshness),
+    ("6. PESO            — cosa entra nel contesto a ogni avvio", check_weight),
 ]
 
 

@@ -34,6 +34,7 @@ docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni all
 scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
 scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
 scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
+scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
 
 aggancio degli hook, NON versionato, uno per agente e per macchina:
 .claude/settings.local.json  Claude Code
@@ -258,15 +259,26 @@ del repo di un ordine di grandezza. Se non è progettato per invecchiare, una se
 lo legge tutto per rispondere a «a che punto siamo», oppure si ferma alla prima sezione e
 crede a uno stato di due settimane fa.
 
-Quattro accorgimenti, tutti pagati sul campo:
+Sei accorgimenti, tutti pagati sul campo:
 
 - **una data di ultimo aggiornamento in testa**, e un rimando esplicito del tipo «se
   riprendi da qui, salta a *Da sapere prima di riprendere*»;
 - **una sola sezione dice lo stato corrente**, in una schermata. Il resto è cronologia. Se
   lo stato attuale va ricostruito leggendo la cronologia in ordine, il file ha già fallito;
-- **le cose risolte si barrano, non si cancellano**: `~~voce~~ — FATTO il <data>` più il
-  link alla sezione che racconta com'è andata. Cancellare fa sparire il perché; lasciarle
-  aperte fa sembrare aperto ciò che non lo è;
+- **le cose risolte si barrano e, nello stesso commit, escono dalla sezione degli aperti**:
+  `~~voce~~ — FATTO il <data>` va nella cronologia, e fra gli aperti resta al più il link.
+  Cancellare fa sparire il perché; lasciarle fra gli aperti fa sembrare aperto ciò che non
+  lo è, e le fa pagare in token a ogni avvio (vedi sotto);
+- **i blocchi `session-start` restano sotto il tetto** di `config.toml`
+  (`[context] max_injection_chars`, 8000 caratteri di partenza): lo stato corrente in una
+  schermata e i difetti aperti come **indice**, una riga per voce con il link all'ancora
+  del dettaglio, che sta fuori dai blocchi. Quello che sta fra i marcatori entra nel
+  contesto a ogni avvio, `/clear` e compattazione, e resta in ogni chiamata della sessione.
+  Oltre il tetto l'hook inietta solo titoli e prime righe, e il lint avvisa;
+- **i registri che crescono in modo illimitato** — collaudo, cronologia — stanno in file
+  propri linkati da `status.md` appena superano qualche schermata. `status.md` risponde a
+  «a che punto siamo»; se per rispondere va letto un file da centinaia di KB, costa più
+  della domanda;
 - **un marcatore di freschezza leggibile da una macchina**, in testa al file:
 
   ```markdown
@@ -282,6 +294,13 @@ Quattro accorgimenti, tutti pagati sul campo:
 La sezione di stato corrente è quella che si sporca per prima, perché la aggiorna solo chi
 si ricorda che esiste. **Va riletta ogni volta che si dichiara concluso qualcosa**, non ogni
 tanto.
+
+Cosa succede senza questi accorgimenti, misurato su un repository di questo impianto: in
+tre settimane la sezione dei difetti aperti è arrivata a 53 voci, almeno 8 delle quali già chiuse,
+e i blocchi iniettati sono passati da 26 mila a 135 mila caratteri [misurato, traccia
+degli hook], circa 60 mila token a ogni avvio [stimato]. Ridotti al loro indice pesano
+3.096 token [misurato con `context_cost.py misura`, 2026-09-28]. Nessuno se n'era
+accorto, perché la crescita si vedeva solo nella traccia: per questo ora c'è un tetto.
 
 ### Distingui il livello di evidenza, sempre — e rendilo cercabile
 
@@ -353,7 +372,7 @@ e **prova che funzionino** prima di dichiararle fatte.
 ### 1. Il lint dei documenti — è la parte più importante
 
 Uno script, versionato, che non guarda il prodotto ma **i documenti che lo descrivono**.
-Cinque controlli, in ordine di valore:
+Sei controlli, in ordine di valore:
 
 | # | Controllo | Cosa intercetta |
 |---|---|---|
@@ -362,6 +381,7 @@ Cinque controlli, in ordine di valore:
 | 3 | **Evidenza** | un *verificato* senza data, o il lessico conversazionale entrato in un documento |
 | 4 | **Link e ancore** | un rimando o un'ancora che non risolve |
 | 5 | **Freschezza** | quanti commit hanno toccato il codice dopo il marcatore `context-verified-at` |
+| 6 | **Peso** | quanto testo l'hook di avvio inietta; avvisa se i blocchi `session-start` superano il tetto |
 
 Esce non-zero se trova errori. Le scelte di progetto che contano:
 
@@ -415,7 +435,13 @@ turno comunque, mentre la decisione JSON blocca sia lì sia su Claude Code 2.1.2
 le sezioni volatili: cosa è bloccato, cosa è rotto, il cruscotto dell'evidenza, e un avviso
 se il codice è andato avanti rispetto al marcatore di freschezza. Non «ricordati di
 leggere»: è già lì. Il suo stdout entra nel contesto, quindi ogni riga si paga in token a
-ogni avvio — inietta le due sezioni che contano, non tutto il file.
+ogni avvio e in ogni chiamata successiva — inietta le due sezioni che contano, non tutto
+il file. Il testo lo costruisce `context_core.build_injection`, lo stesso per l'hook, il
+lint e la misura dei consumi: così i tre non possono dare numeri diversi. Oltre il tetto
+di `config.toml` l'hook inietta solo l'indice dei blocchi (titoli e prima riga di ogni
+voce) con un avviso, e chiede all'agente di leggere nel file **la sezione che gli serve**,
+non il file intero: su uno `status.md` di centinaia di KB, «rileggi il file» costa più
+dell'iniezione stessa.
 
 **`Stop`** — scatta **alla fine di ogni risposta**, non a fine sessione: è il punto che
 viene frainteso più spesso, ed è anche il motivo per cui funziona. Se il codice è cambiato
@@ -441,6 +467,36 @@ Due proprietà non negoziabili:
 - **Blocca una volta sola per sessione.** `Stop` scattando a ogni turno diventa martellante
   se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci; e
   non bloccare un turno che l'agente ha gia' prolungato per un hook (`stop_hook_active`).
+
+### 3. La misura dei consumi — quanto pesa davvero il contesto
+
+```
+python scripts/context_cost.py            resoconto: niente chiamate al modello
+python scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+```
+
+Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i
+`token_count` di Codex — e ne ricava, sessione per sessione, chiamate, contesto all'avvio e
+massimo, token scritti e letti in cache, costo a listino. Poi le letture dei documenti di
+contesto e l'andamento dell'iniezione nel tempo, dalla traccia degli hook.
+
+Ogni numero porta la sua fonte, ed è la regola da rispettare quando lo riporti:
+**[misurato]** è ciò che l'agente ha registrato o che la misura esatta ha trovato;
+**[stimato]** è un calcolo (caratteri divisi per un rapporto, token per un prezzo). Non
+dare mai un numero di token come fatto se lo strumento lo marca stimato.
+
+`misura` è l'unico modo di sapere quanti token pesano `AGENTS.md` e l'iniezione **senza**
+un'API di conteggio: lancia Claude Code headless in una copia usa e getta, una volta
+vuota, una con le istruzioni, una anche con l'iniezione, e sottrae i totali che Claude
+Code riporta. Tutto ciò che non è di questo impianto si elide. Rifalla dopo aver cambiato
+`AGENTS.md` o i blocchi `session-start`: il resoconto sa se la misura è ancora di quei
+contenuti e, se non lo è, torna a stimare e lo dice.
+
+Cosa hanno trovato le prime misure, per orientarsi: sulla macchina dove sono state fatte,
+con i suoi plugin, la base dell'harness vale circa 28 mila token e l'impianto ne aggiunge
+3-4 mila [misurato, 2026-09-28], mentre il contesto medio per chiamata nelle sessioni
+lunghe va da 175 a 260 mila token [misurato, trascrizioni]. **Il costo lo decide la lunghezza delle sessioni**: una sessione
+per compito, `/clear` fra un compito e l'altro, sottoagenti per le letture pesanti.
 
 ## Procedura
 
@@ -576,6 +632,10 @@ l'utente lo chieda. È l'unica cosa che sopravvive alla fine della sessione.
 
 E una regola sull'ingresso: **`AGENTS.md` cresce solo se nasce un sottosistema.** Se stai
 aggiungendo una riga di contenuto lì dentro, quasi certamente va in un file linkato.
+
+Lo stesso vale per i blocchi `session-start` di `status.md`: una voce chiusa esce dagli
+aperti nel commit che la chiude, e il controllo 6 del lint dice quanto pesa l'iniezione.
+Se supera il tetto, si accorcia il documento, non si alza il tetto.
 
 Infine, la regola che tiene in piedi il livello che esegue: **il lint va fatto girare prima
 di dichiarare concluso qualcosa**, e quando trova qualcosa si corregge il documento, non si

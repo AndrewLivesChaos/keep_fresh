@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-26T13:10:35',
+    'packed_at': '2026-09-28T10:22:37',
     'source': 'context_script',
-    'commit': '01e0ae1',
-    'payload_dirty': False,
-    'payload_sha': '3c3592141a1a',
+    'commit': '8ba27e8',
+    'payload_dirty': True,
+    'payload_sha': 'df23ecac3846',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -430,6 +430,64 @@ def smoke_test() -> bool:
         log = tmp / ".git" / "agent-hooks.log"
         step("la traccia degli hook registra l'agente",
              log.is_file() and "prova" in log.read_text(encoding="utf-8"))
+
+        # Il tetto all'iniezione: oltre il tetto l'hook inietta l'indice e il lint avvisa,
+        # senza fallire. Si abbassa il tetto invece di gonfiare status.md.
+        cfg_p = tmp / CONFIG_FILE
+        cfg_orig = cfg_p.read_text(encoding="utf-8")
+        cfg_p.write_text(cfg_orig.replace("max_injection_chars = 8000",
+                                          "max_injection_chars = 40"), encoding="utf-8")
+        r = run(sys.executable, "scripts/agent_hooks.py", "session-start", "--agent", "prova",
+                stdin='{"source":"startup"}')
+        step("oltre il tetto SessionStart inietta solo l'indice",
+             r.returncode == 0 and "solo il loro indice" in r.stdout,
+             f"exit {r.returncode}: {r.stdout[-400:]}")
+        r = run(sys.executable, "scripts/docs_lint.py")
+        step("oltre il tetto il lint avvisa e non fallisce",
+             r.returncode == 0 and "[PESO]" in r.stdout, _lint_lines(r.stdout))
+        cfg_p.write_text(cfg_orig, encoding="utf-8")
+
+        # La misura dei consumi, su una trascrizione finta con numeri noti. Il messaggio
+        # m1 compare due volte, come fa lo streaming: conta una volta, con l'ultimo usage.
+        home = Path(tempfile.mkdtemp(prefix="agent-context-claude-"))
+        try:
+            proj = home / "projects" / "finto"
+            proj.mkdir(parents=True)
+            base = {"sessionId": "S1", "cwd": str(tmp.resolve()),
+                    "timestamp": "2026-09-01T10:00:00Z"}
+
+            def asst(mid, usage):
+                return dict(base, type="assistant", message={
+                    "id": mid, "model": "claude-opus-5-5", "content": [], "usage": usage})
+            rows = [dict(base, type="user", message={"role": "user", "content": "ciao"}),
+                    asst("m1", {"input_tokens": 2, "cache_creation_input_tokens": 1000,
+                                "cache_read_input_tokens": 0, "output_tokens": 1}),
+                    asst("m1", {"input_tokens": 2, "cache_creation_input_tokens": 1000,
+                                "cache_creation": {"ephemeral_1h_input_tokens": 1000,
+                                                   "ephemeral_5m_input_tokens": 0},
+                                "cache_read_input_tokens": 0, "output_tokens": 10}),
+                    asst("m2", {"input_tokens": 3, "cache_creation_input_tokens": 0,
+                                "cache_read_input_tokens": 1000, "output_tokens": 20})]
+            (proj / "s1.jsonl").write_text(
+                "".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+            r = subprocess.run([sys.executable, "scripts/context_cost.py", "--json"],
+                               cwd=str(tmp), capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
+                               env=dict(env, CLAUDE_CONFIG_DIR=str(home),
+                                        CODEX_HOME=str(home / "codex")))
+            try:
+                ss = json.loads(r.stdout)["claude_sessions"]
+            except (ValueError, KeyError):
+                ss = []
+            s = ss[0] if len(ss) == 1 else {}
+            # (2+3)*4 + 1000*4*2 + 1000*0,20 + (10+20)*20, in milionesimi di dollaro
+            step("context_cost: token e costo esatti su una trascrizione nota",
+                 s.get("calls") == 2 and s.get("in") == 5 and s.get("w1") == 1000
+                 and s.get("r") == 1000 and s.get("out") == 30
+                 and abs(s.get("cost", 0) - 0.00882) < 1e-9,
+                 f"exit {r.returncode}: {r.stdout[-300:]}{r.stderr[-300:]}")
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
         # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
         # con un comando che punta allo script che esiste.
@@ -1520,6 +1578,7 @@ if __name__ == "__main__":
 # scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
 # scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
 # scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
+# scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
 #
 # aggancio degli hook, NON versionato, uno per agente e per macchina:
 # .claude/settings.local.json  Claude Code
@@ -1744,15 +1803,26 @@ if __name__ == "__main__":
 # lo legge tutto per rispondere a «a che punto siamo», oppure si ferma alla prima sezione e
 # crede a uno stato di due settimane fa.
 #
-# Quattro accorgimenti, tutti pagati sul campo:
+# Sei accorgimenti, tutti pagati sul campo:
 #
 # - **una data di ultimo aggiornamento in testa**, e un rimando esplicito del tipo «se
 #   riprendi da qui, salta a *Da sapere prima di riprendere*»;
 # - **una sola sezione dice lo stato corrente**, in una schermata. Il resto è cronologia. Se
 #   lo stato attuale va ricostruito leggendo la cronologia in ordine, il file ha già fallito;
-# - **le cose risolte si barrano, non si cancellano**: `~~voce~~ — FATTO il <data>` più il
-#   link alla sezione che racconta com'è andata. Cancellare fa sparire il perché; lasciarle
-#   aperte fa sembrare aperto ciò che non lo è;
+# - **le cose risolte si barrano e, nello stesso commit, escono dalla sezione degli aperti**:
+#   `~~voce~~ — FATTO il <data>` va nella cronologia, e fra gli aperti resta al più il link.
+#   Cancellare fa sparire il perché; lasciarle fra gli aperti fa sembrare aperto ciò che non
+#   lo è, e le fa pagare in token a ogni avvio (vedi sotto);
+# - **i blocchi `session-start` restano sotto il tetto** di `config.toml`
+#   (`[context] max_injection_chars`, 8000 caratteri di partenza): lo stato corrente in una
+#   schermata e i difetti aperti come **indice**, una riga per voce con il link all'ancora
+#   del dettaglio, che sta fuori dai blocchi. Quello che sta fra i marcatori entra nel
+#   contesto a ogni avvio, `/clear` e compattazione, e resta in ogni chiamata della sessione.
+#   Oltre il tetto l'hook inietta solo titoli e prime righe, e il lint avvisa;
+# - **i registri che crescono in modo illimitato** — collaudo, cronologia — stanno in file
+#   propri linkati da `status.md` appena superano qualche schermata. `status.md` risponde a
+#   «a che punto siamo»; se per rispondere va letto un file da centinaia di KB, costa più
+#   della domanda;
 # - **un marcatore di freschezza leggibile da una macchina**, in testa al file:
 #
 #   ```markdown
@@ -1768,6 +1838,13 @@ if __name__ == "__main__":
 # La sezione di stato corrente è quella che si sporca per prima, perché la aggiorna solo chi
 # si ricorda che esiste. **Va riletta ogni volta che si dichiara concluso qualcosa**, non ogni
 # tanto.
+#
+# Cosa succede senza questi accorgimenti, misurato su un repository di questo impianto: in
+# tre settimane la sezione dei difetti aperti è arrivata a 53 voci, almeno 8 delle quali già chiuse,
+# e i blocchi iniettati sono passati da 26 mila a 135 mila caratteri [misurato, traccia
+# degli hook], circa 60 mila token a ogni avvio [stimato]. Ridotti al loro indice pesano
+# 3.096 token [misurato con `context_cost.py misura`, 2026-09-28]. Nessuno se n'era
+# accorto, perché la crescita si vedeva solo nella traccia: per questo ora c'è un tetto.
 #
 # ### Distingui il livello di evidenza, sempre — e rendilo cercabile
 #
@@ -1839,7 +1916,7 @@ if __name__ == "__main__":
 # ### 1. Il lint dei documenti — è la parte più importante
 #
 # Uno script, versionato, che non guarda il prodotto ma **i documenti che lo descrivono**.
-# Cinque controlli, in ordine di valore:
+# Sei controlli, in ordine di valore:
 #
 # | # | Controllo | Cosa intercetta |
 # |---|---|---|
@@ -1848,6 +1925,7 @@ if __name__ == "__main__":
 # | 3 | **Evidenza** | un *verificato* senza data, o il lessico conversazionale entrato in un documento |
 # | 4 | **Link e ancore** | un rimando o un'ancora che non risolve |
 # | 5 | **Freschezza** | quanti commit hanno toccato il codice dopo il marcatore `context-verified-at` |
+# | 6 | **Peso** | quanto testo l'hook di avvio inietta; avvisa se i blocchi `session-start` superano il tetto |
 #
 # Esce non-zero se trova errori. Le scelte di progetto che contano:
 #
@@ -1901,7 +1979,13 @@ if __name__ == "__main__":
 # le sezioni volatili: cosa è bloccato, cosa è rotto, il cruscotto dell'evidenza, e un avviso
 # se il codice è andato avanti rispetto al marcatore di freschezza. Non «ricordati di
 # leggere»: è già lì. Il suo stdout entra nel contesto, quindi ogni riga si paga in token a
-# ogni avvio — inietta le due sezioni che contano, non tutto il file.
+# ogni avvio e in ogni chiamata successiva — inietta le due sezioni che contano, non tutto
+# il file. Il testo lo costruisce `context_core.build_injection`, lo stesso per l'hook, il
+# lint e la misura dei consumi: così i tre non possono dare numeri diversi. Oltre il tetto
+# di `config.toml` l'hook inietta solo l'indice dei blocchi (titoli e prima riga di ogni
+# voce) con un avviso, e chiede all'agente di leggere nel file **la sezione che gli serve**,
+# non il file intero: su uno `status.md` di centinaia di KB, «rileggi il file» costa più
+# dell'iniezione stessa.
 #
 # **`Stop`** — scatta **alla fine di ogni risposta**, non a fine sessione: è il punto che
 # viene frainteso più spesso, ed è anche il motivo per cui funziona. Se il codice è cambiato
@@ -1927,6 +2011,36 @@ if __name__ == "__main__":
 # - **Blocca una volta sola per sessione.** `Stop` scattando a ogni turno diventa martellante
 #   se ripete. Lascia un marcatore (in una directory non versionata, es. `.git/`) e taci; e
 #   non bloccare un turno che l'agente ha gia' prolungato per un hook (`stop_hook_active`).
+#
+# ### 3. La misura dei consumi — quanto pesa davvero il contesto
+#
+# ```
+# python scripts/context_cost.py            resoconto: niente chiamate al modello
+# python scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+# ```
+#
+# Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i
+# `token_count` di Codex — e ne ricava, sessione per sessione, chiamate, contesto all'avvio e
+# massimo, token scritti e letti in cache, costo a listino. Poi le letture dei documenti di
+# contesto e l'andamento dell'iniezione nel tempo, dalla traccia degli hook.
+#
+# Ogni numero porta la sua fonte, ed è la regola da rispettare quando lo riporti:
+# **[misurato]** è ciò che l'agente ha registrato o che la misura esatta ha trovato;
+# **[stimato]** è un calcolo (caratteri divisi per un rapporto, token per un prezzo). Non
+# dare mai un numero di token come fatto se lo strumento lo marca stimato.
+#
+# `misura` è l'unico modo di sapere quanti token pesano `AGENTS.md` e l'iniezione **senza**
+# un'API di conteggio: lancia Claude Code headless in una copia usa e getta, una volta
+# vuota, una con le istruzioni, una anche con l'iniezione, e sottrae i totali che Claude
+# Code riporta. Tutto ciò che non è di questo impianto si elide. Rifalla dopo aver cambiato
+# `AGENTS.md` o i blocchi `session-start`: il resoconto sa se la misura è ancora di quei
+# contenuti e, se non lo è, torna a stimare e lo dice.
+#
+# Cosa hanno trovato le prime misure, per orientarsi: sulla macchina dove sono state fatte,
+# con i suoi plugin, la base dell'harness vale circa 28 mila token e l'impianto ne aggiunge
+# 3-4 mila [misurato, 2026-09-28], mentre il contesto medio per chiamata nelle sessioni
+# lunghe va da 175 a 260 mila token [misurato, trascrizioni]. **Il costo lo decide la lunghezza delle sessioni**: una sessione
+# per compito, `/clear` fra un compito e l'altro, sottoagenti per le letture pesanti.
 #
 # ## Procedura
 #
@@ -2063,6 +2177,10 @@ if __name__ == "__main__":
 # E una regola sull'ingresso: **`AGENTS.md` cresce solo se nasce un sottosistema.** Se stai
 # aggiungendo una riga di contenuto lì dentro, quasi certamente va in un file linkato.
 #
+# Lo stesso vale per i blocchi `session-start` di `status.md`: una voce chiusa esce dagli
+# aperti nel commit che la chiude, e il controllo 6 del lint dice quanto pesa l'iniezione.
+# Se supera il tetto, si accorcia il documento, non si alza il tetto.
+#
 # Infine, la regola che tiene in piedi il livello che esegue: **il lint va fatto girare prima
 # di dichiarare concluso qualcosa**, e quando trova qualcosa si corregge il documento, non si
 # allarga l'eccezione.
@@ -2088,6 +2206,13 @@ if __name__ == "__main__":
 # # Percorsi da NON considerare codice anche se la rilevazione li prende: codice
 # # generato, copie di librerie esterne.
 # exclude = []
+#
+# [context]
+# # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
+# # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
+# # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
+# # pesa davvero in token lo misura: python scripts/context_cost.py
+# max_injection_chars = 8000
 #
 # # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
 # # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
@@ -2128,9 +2253,11 @@ if __name__ == "__main__":
 # configurazione LOCALE di ciascun agente. Qui non c'e' niente di specifico di un agente:
 # il protocollo usato e' quello che gli agenti supportati hanno in comune.
 #
-#   session-start  stampa su stdout le sezioni volatili di status.md. Lo stdout di questo
-#                  evento entra nel contesto dell'agente, NON a schermo: l'utente non vede
-#                  niente ed e' normale.
+#   session-start  stampa su stdout le sezioni volatili di status.md, o solo il loro indice
+#                  se superano il tetto di config.toml (il testo lo costruisce
+#                  context_core.build_injection). Lo stdout di questo evento entra nel
+#                  contesto dell'agente, NON a schermo: l'utente non vede niente ed e'
+#                  normale.
 #   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
 #                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
 #                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
@@ -2219,65 +2346,19 @@ if __name__ == "__main__":
 #     if root is None:
 #         return 0
 #
-#     STATUS_FILE = core.STATUS_FILE
-#     status_path = root / STATUS_FILE
-#     if not status_path.is_file():
-#         log("SessionStart", f"nessun {STATUS_FILE}: niente da iniettare")
+#     inj = core.build_injection(root)
+#     if inj is None:
+#         log("SessionStart", f"nessun {core.STATUS_FILE}: niente da iniettare")
 #         return 0
 #
-#     status = status_path.read_text(encoding="utf-8", errors="replace")
-#     cfg, _ = core.load_config(root)
-#     specs, labels = core.code_scope(root, cfg)
-#     where = ", ".join(labels)
-#
-#     out = [
-#         "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
-#         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, rileggi il file intero.",
-#         "",
-#     ]
-#
-#     # --- Le sezioni che il documento stesso dichiara volatili ---
-#     blocks = core.extract_marked(status)
-#     if blocks:
-#         out.append("\n\n".join(blocks))
-#         out.append("")
-#     else:
-#         out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
-#                    f"nessuna sezione dichiarata volatile.)")
-#         out.append("")
-#
-#     # --- Cruscotto dei livelli di evidenza ---
-#     levels = core.count_levels(root)
-#     out.append("Evidenza nei documenti di contesto: " +
-#                "  ".join(f"{k}={v}" for k, v in levels.items()))
-#
-#     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
-#     sha = core.read_marker(status)
-#     if sha:
-#         ok, since = core.commits_since(root, sha, specs)
-#         if ok and since:
-#             out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
-#                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
-#                        f"riconciliato. Potrebbe dire cose non piu' vere.")
-#     elif core.head_sha(root) is not None:
-#         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
-#                    f"la sua freschezza non e' misurabile.")
-#
-#     # --- Lavoro non registrato rimasto da una sessione precedente ---
-#     if core.dirty(root, specs) and not core.dirty(root, [STATUS_FILE]):
-#         out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
-#                    f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
-#                    f"precedente mai registrato: valuta se va annotato.")
-#
-#     out += ["", "Verifica che i documenti dicano ancora il vero: "
-#                 "python scripts/docs_lint.py",
-#             "=== fine stato del progetto ==="]
-#
-#     text = "\n".join(out)
+#     text = inj["text"]
 #     print(text)
+#     # Il formato di questa riga lo legge scripts/context_cost.py: "iniettati N caratteri".
+#     ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
+#                if inj["reduced"] else "")
 #     log("SessionStart", f"iniettati {len(text)} caratteri "
 #                         f"(fonte={data.get('source', '?')}, "
-#                         f"assunto={levels.get('assunto', 0)})")
+#                         f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
 #     return 0
 #
 #
@@ -2426,7 +2507,7 @@ if __name__ == "__main__":
 # # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # # i nomi che il lint cerca.
 # MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
-#                  "scripts/agent_context_version.json"}
+#                  "scripts/context_cost.py", "scripts/agent_context_version.json"}
 # # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 # MANAGED_NAMES = {"agent_context_init.py"}
 #
@@ -2679,6 +2760,850 @@ if __name__ == "__main__":
 #             counts[lvl] += len(re.findall(r"\*\*" + re.escape(lvl) + r"\*\*", text))
 #     return counts
 #
+#
+# # ---------------------------------------------------------------------- l'iniezione all'avvio
+#
+# # Il tetto, in caratteri, dei blocchi session-start che l'hook inietta per intero. E' in
+# # caratteri perche' l'hook non ha un tokenizer. Quanti token valgano davvero lo misura
+# # scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
+# # impianto un token ha fatto da 1,9 a 2,3 caratteri (stima dalle sessioni, 2026-09-26).
+# DEFAULT_INJECTION_BUDGET = 8000
+# # Nell'indice, la prima riga di ogni voce si taglia qui: basta a riconoscerla.
+# INDEX_LINE_MAX = 160
+#
+#
+# def injection_budget(cfg) -> int:
+#     """Il tetto da [context] max_injection_chars in config.toml, o quello di default."""
+#     val = config_table(cfg, "context").get("max_injection_chars")
+#     if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+#         return val
+#     return DEFAULT_INJECTION_BUDGET
+#
+#
+# def index_of(blocks) -> str:
+#     """
+#     L'indice dei blocchi: i titoli e la prima riga di ogni voce di primo livello. E' cio'
+#     che si inietta quando i blocchi superano il tetto: l'agente vede cosa c'e' e dove, e
+#     legge il dettaglio solo di cio' che gli serve.
+#     """
+#     out = []
+#     for block in blocks:
+#         for line in block.splitlines():
+#             if re.match(r"^#{1,6}\s", line):
+#                 out.append(line.rstrip())
+#             elif re.match(r"^(?:[-*]|\d+\.)\s", line):
+#                 text = line.rstrip()
+#                 if len(text) > INDEX_LINE_MAX:
+#                     text = text[:INDEX_LINE_MAX - 1].rstrip() + "…"
+#                 out.append(text)
+#         out.append("")
+#     return "\n".join(out).strip()
+#
+#
+# def build_injection(root, cfg=None):
+#     """
+#     Il testo che l'hook di avvio mette nel contesto dell'agente. Si costruisce qui, e non
+#     nell'hook, perche' hook, lint e misura dei consumi ne vedano la stessa identica
+#     versione. None se non c'e' status.md.
+#
+#     Torna un dizionario: text (il testo esatto), blocks_chars (quanto fanno i blocchi
+#     session-start per intero), budget, reduced (True se i blocchi superano il tetto e al
+#     loro posto va l'indice), levels (il cruscotto dell'evidenza).
+#     """
+#     root = Path(root)
+#     status_path = root / STATUS_FILE
+#     if not status_path.is_file():
+#         return None
+#     if cfg is None:
+#         cfg, _ = load_config(root)
+#     status = status_path.read_text(encoding="utf-8", errors="replace")
+#     specs, labels = code_scope(root, cfg)
+#     where = ", ".join(labels)
+#     budget = injection_budget(cfg)
+#
+#     out = [
+#         "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
+#         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, leggi in quel file la "
+#         f"sezione che ti serve, non il file intero.",
+#         "",
+#     ]
+#
+#     # --- Le sezioni che il documento stesso dichiara volatili ---
+#     blocks = extract_marked(status)
+#     blocks_chars = sum(len(b) for b in blocks)
+#     reduced = blocks_chars > budget
+#     if not blocks:
+#         out.append(f"({STATUS_FILE} non ha blocchi <!-- session-start: begin/end -->: "
+#                    f"nessuna sezione dichiarata volatile.)")
+#     elif reduced:
+#         out.append(f"ATTENZIONE: i blocchi session-start di {STATUS_FILE} fanno "
+#                    f"{blocks_chars} caratteri, oltre il tetto di {budget}. Qui sotto c'e' "
+#                    f"solo il loro indice: leggi nel file le voci che ti servono. Se lavori "
+#                    f"su {STATUS_FILE}, riporta i blocchi sotto il tetto (vedi "
+#                    f"docs/agent_docs_guide.md).")
+#         out.append("")
+#         out.append(index_of(blocks))
+#     else:
+#         out.append("\n\n".join(blocks))
+#     out.append("")
+#
+#     # --- Cruscotto dei livelli di evidenza ---
+#     levels = count_levels(root)
+#     out.append("Evidenza nei documenti di contesto: " +
+#                "  ".join(f"{k}={v}" for k, v in levels.items()))
+#
+#     # --- Freschezza: il documento e' invecchiato rispetto al codice? ---
+#     sha = read_marker(status)
+#     if sha:
+#         ok, since = commits_since(root, sha, specs)
+#         if ok and since:
+#             out.append(f"ATTENZIONE: {len(since)} commit hanno toccato il codice ({where}) "
+#                        f"dopo {sha}, il punto a cui {STATUS_FILE} dichiara di essere "
+#                        f"riconciliato. Potrebbe dire cose non piu' vere.")
+#     elif head_sha(root) is not None:
+#         out.append(f"ATTENZIONE: {STATUS_FILE} non ha il marcatore context-verified-at: "
+#                    f"la sua freschezza non e' misurabile.")
+#
+#     # --- Lavoro non registrato rimasto da una sessione precedente ---
+#     if dirty(root, specs) and not dirty(root, [STATUS_FILE]):
+#         out.append(f"ATTENZIONE: ci sono modifiche non committate al codice ({where}) e "
+#                    f"{STATUS_FILE} e' intatto. Probabile lavoro di una sessione "
+#                    f"precedente mai registrato: valuta se va annotato.")
+#
+#     out += ["", "Verifica che i documenti dicano ancora il vero: "
+#                 "python scripts/docs_lint.py",
+#             "=== fine stato del progetto ==="]
+#     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
+#             "reduced": reduced, "levels": levels}
+#
+# ---- AGENT-CONTEXT-FILE: scripts/context_cost.py ----
+# #!/usr/bin/env python3
+# # -*- coding: utf-8 -*-
+# """
+# context_cost — quanto pesa il contesto di questo repository, misurato.
+#
+#     python scripts/context_cost.py                resoconto; non chiama nessun modello
+#     python scripts/context_cost.py misura         misura ESATTA dei token che questo
+#                                                   impianto aggiunge a ogni sessione
+#     python scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
+#     python scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
+#                                                   (il vecchio percorso di un repo spostato)
+#
+# Ogni numero dice da dove viene:
+#
+#   [misurato]  letto da cio' che l'agente registra: l'usage che l'API restituisce a ogni
+#               chiamata (trascrizioni di Claude Code, token_count di Codex), oppure il
+#               risultato di `misura`. E' il dato, non un calcolo.
+#   [stimato]   calcolato: caratteri divisi per un rapporto caratteri/token, o token
+#               moltiplicati per un prezzo di listino. Il rapporto viene dall'ultima
+#               `misura` di questo repository, se c'e'; altrimenti e' un valore di
+#               partenza, dichiarato.
+#
+# COME MISURA `misura`. Lancia Claude Code headless tre volte in una copia usa e getta:
+# repository vuoto, poi con AGENTS.md e CLAUDE.md, poi anche con l'hook di avvio che
+# inietta il testo che inietterebbe qui. Il totale dei token di input di ogni esecuzione
+# lo riporta Claude Code; la differenza fra due esecuzioni e' il peso esatto dello strato
+# aggiunto, con il tokenizer e l'harness veri. Tutto il resto (prompt di sistema, strumenti,
+# istruzioni e plugin dell'utente) e' uguale nelle tre e si elide: la base viene misurata
+# due volte e, se non torna identica, la misura si ferma invece di dare un numero sporco.
+# Precisione: pochi token. Due misure dello stesso repository, il 2026-09-28, hanno dato
+# 1.302 e 1.300 token per le stesse istruzioni: il percorso della copia usa e getta, che
+# cambia a ogni misura, compare nell'intestazione che l'agente mette ai file. La misura
+# comprende quelle intestazioni, perche' anche loro sono contesto pagato.
+# Costa quattro chiamate brevi al modello (circa $0,40 con Opus 5.5, quasi tutto la prima
+# scrittura in cache della base), e il costo esatto lo stampa alla fine.
+# Il risultato va in .git/context-cost.json, legato al contenuto misurato: se i file
+# cambiano, il resoconto lo dice e torna a stimare.
+#
+# PREZZI. I costi sono l'equivalente a listino API, anche per chi usa un abbonamento (in
+# quel caso sono quota, non fattura). Il listino e' in PRICES qui sotto, con la sua fonte;
+# un modello che non c'e' non riceve un costo inventato. Per Codex lo strumento riporta i
+# token, non i costi.
+# """
+#
+# import argparse
+# import hashlib
+# import io
+# import json
+# import os
+# import re
+# import shutil
+# import subprocess
+# import sys
+# import tempfile
+# from collections import defaultdict
+# from datetime import datetime, timedelta, timezone
+# from pathlib import Path
+#
+# if hasattr(sys.stdout, "buffer"):
+#     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+#
+# sys.dont_write_bytecode = True
+# sys.path.insert(0, str(Path(__file__).resolve().parent))
+# import context_core as core  # noqa: E402
+#
+# # ------------------------------------------------------------------------- listino
+#
+# # $ per milione di token: (input, output, lettura dalla cache). La scrittura in cache
+# # costa 1,25x l'input con durata 5 minuti e 2x con durata 1 ora; la lettura 0,1x l'input,
+# # salvo dove il listino dice altro (Opus 5.5: $0,20; Fable 5.1: $0,25). Fonte: tabella
+# # dei modelli Anthropic aggiornata al 2026-06-24, con Claude Opus 5.5 al lancio.
+# PRICES = {
+#     "claude-opus-5-5": (4.00, 20.00, 0.20),
+#     "claude-opus-5": (5.00, 25.00, 0.50),
+#     "claude-fable-5-1": (10.00, 50.00, 0.25),
+#     "claude-fable-5": (10.00, 50.00, 1.00),
+#     "claude-opus-4-8": (5.00, 25.00, 0.50),
+#     "claude-opus-4-7": (5.00, 25.00, 0.50),
+#     "claude-opus-4-6": (5.00, 25.00, 0.50),
+#     "claude-sonnet-5": (2.00, 10.00, 0.20),
+#     "claude-sonnet-4-6": (3.00, 15.00, 0.30),
+#     "claude-haiku-4-5": (1.00, 5.00, 0.10),
+# }
+# WRITE_5M, WRITE_1H = 1.25, 2.0
+# # I modelli per cui il costo calcolato qui e' stato confrontato con quello che Claude Code
+# # calcola da se' (total_cost_usd di `claude -p`) su una sessione con scrittura e lettura
+# # in cache, e coincideva alla settima cifra decimale: 2026-09-26 Opus 5.5, 2026-09-28 gli
+# # altri tre. Per gli altri il resoconto dice che il prezzo non e' verificato.
+# VERIFIED_PRICES = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}
+#
+# # Rapporto caratteri/token usato solo finche' non c'e' una `misura` di questo repository.
+# # Valore di partenza: nelle sessioni di tre repository di questo impianto (documenti in
+# # italiano, markdown) e' stato 1,9-2,3 (stima dalle trascrizioni, 2026-09-26).
+# DEFAULT_CHARS_PER_TOKEN = 2.1
+#
+# MEASURE_FILE = "context-cost.json"      # in .git/: e' un fatto della macchina, non del repo
+# PROMPT = "Rispondi solo: OK"
+#
+#
+# # ----------------------------------------------------------------------- utilita'
+#
+# def norm(p) -> str:
+#     return os.path.normcase(os.path.normpath(str(p))).rstrip("\\/")
+#
+#
+# def inside(path, roots) -> bool:
+#     p = norm(path)
+#     return any(p == r or p.startswith(r + os.sep) for r in roots)
+#
+#
+# def parse_ts(s):
+#     try:
+#         return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+#     except (TypeError, ValueError):
+#         return None
+#
+#
+# def price_of(model):
+#     if not model:
+#         return None
+#     if model in PRICES:
+#         return PRICES[model]
+#     # Un id con data in coda (claude-x-20260101) vale come il suo nome base.
+#     base = re.sub(r"-\d{8}$", "", model)
+#     return PRICES.get(base)
+#
+#
+# def usd(x):
+#     return "n/d" if x is None else f"${x:,.2f}"
+#
+#
+# def num(x):
+#     return f"{x:,}".replace(",", ".")
+#
+#
+# def sha(text: str) -> str:
+#     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+#
+#
+# def iter_jsonl(path):
+#     try:
+#         with open(path, encoding="utf-8", errors="replace") as fh:
+#             for line in fh:
+#                 line = line.strip()
+#                 if not line:
+#                     continue
+#                 try:
+#                     d = json.loads(line)
+#                 except ValueError:
+#                     continue
+#                 if isinstance(d, dict):
+#                     yield d
+#     except OSError:
+#         return
+#
+#
+# # ------------------------------------------------------------- il contesto fisso, ora
+#
+# def instruction_files(root: Path):
+#     """
+#     I file di istruzioni che l'agente carica da solo: CLAUDE.md, AGENTS.md e cio' che
+#     importano con righe `@percorso`, seguiti ricorsivamente. Solo quelli dentro il repo.
+#     """
+#     seen, order = set(), []
+#
+#     def visit(p: Path):
+#         try:
+#             rp = p.resolve()
+#         except OSError:
+#             return
+#         if rp in seen or not rp.is_file() or not inside(rp, [norm(root.resolve())]):
+#             return
+#         seen.add(rp)
+#         order.append(rp)
+#         for line in rp.read_text(encoding="utf-8", errors="replace").splitlines():
+#             m = re.match(r"^\s*@(\S+)\s*$", line)
+#             if m:
+#                 visit(rp.parent / m.group(1))
+#
+#     for name in ("CLAUDE.md", "AGENTS.md"):
+#         visit(root / name)
+#     return order
+#
+#
+# def current_fixed(root: Path):
+#     files = instruction_files(root)
+#     instr_text = "".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
+#     inj = core.build_injection(root)
+#     return {
+#         "instruction_files": [p.relative_to(root.resolve()).as_posix() for p in files],
+#         "instructions_chars": len(instr_text),
+#         "instructions_sha": sha(instr_text),
+#         "injection_chars": len(inj["text"]) if inj else 0,
+#         "injection_sha": sha(inj["text"]) if inj else sha(""),
+#         "injection_reduced": bool(inj and inj["reduced"]),
+#         "injection_text": inj["text"] if inj else "",
+#     }
+#
+#
+# def load_measure(root: Path):
+#     g = core.git_dir(root)
+#     p = g / MEASURE_FILE if g else None
+#     if not p or not p.is_file():
+#         return None
+#     try:
+#         return json.loads(p.read_text(encoding="utf-8"))
+#     except (OSError, ValueError):
+#         return None
+#
+#
+# def chars_per_token(measure):
+#     """Il rapporto dalla misura di questo repository, o quello di partenza."""
+#     if measure:
+#         c = measure.get("injection_chars", 0) + measure.get("instructions_chars", 0)
+#         t = measure.get("injection_tokens", 0) + measure.get("instructions_tokens", 0)
+#         if c > 0 and t > 0:
+#             return c / t, "dall'ultima misura di questo repository"
+#     return DEFAULT_CHARS_PER_TOKEN, "valore di partenza, nessuna misura ancora"
+#
+#
+# # --------------------------------------------------------------- Claude Code: sessioni
+#
+# def claude_home() -> Path:
+#     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+#
+#
+# def claude_folder(path) -> str:
+#     """Il nome della cartella in cui Claude Code tiene le trascrizioni di un percorso."""
+#     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+#
+#
+# def claude_files_for(roots, root_paths=(), other_cwds=None):
+#     """
+#     Le trascrizioni di questo repository: quelle la cui cartella di lavoro sta dentro uno
+#     dei percorsi dati, e quelle nella cartella che Claude Code intesta al percorso del
+#     repository. La seconda regola serve ai repository spostati: le sessioni vecchie
+#     registrano il percorso di prima, ma stanno nella cartella di adesso (osservato il
+#     2026-09-28 su progetto, spostato da C:\\vecchia a C:\\progetti\\vecchia).
+#     other_cwds, se dato, raccoglie le cartelle di lavoro diverse da quella di adesso.
+#     """
+#     base = claude_home() / "projects"
+#     if not base.is_dir():
+#         return []
+#     folders = {claude_folder(p).lower() for p in root_paths}
+#     picked = []
+#     for f in base.glob("*/*.jsonl"):
+#         cwd = None
+#         for i, d in enumerate(iter_jsonl(f)):
+#             if d.get("cwd"):
+#                 cwd = d["cwd"]
+#                 break
+#             if i > 200:
+#                 break
+#         by_cwd = bool(cwd and inside(cwd, roots))
+#         if by_cwd or f.parent.name.lower() in folders:
+#             if cwd and not by_cwd and other_cwds is not None:
+#                 other_cwds.add(cwd)
+#             picked.append(f)
+#             # I sottoagenti stanno in <sessione>/subagents/, stessa cartella di lavoro.
+#             picked += sorted((f.parent / f.stem / "subagents").glob("*.jsonl"))
+#     return picked
+#
+#
+# # Una lettura e' uno strumento di lettura, o un comando di shell che mostra un file. Un
+# # `git diff` o un `grep` sul repo che nomina un documento non lo e'.
+# READ_TOOLS = {"Read", "Grep", "NotebookRead"}
+# SHOW_RE = re.compile(r"^\s*(?:rtk\s+)?(?:cat|head|tail|sed\s+-n|less|more|type|"
+#                      r"Get-Content|gc|bat|read)\b", re.I)
+#
+#
+# def is_read(name, inp):
+#     """Il testo in cui cercare il documento letto, o None se non e' una lettura."""
+#     if name in READ_TOOLS:
+#         return " ".join(str(v) for v in inp.values())
+#     if name in ("Bash", "PowerShell"):
+#         cmd = str(inp.get("command", ""))
+#         parts = re.split(r"&&|;|\|\||\n", cmd)
+#         return " ".join(p for p in parts if SHOW_RE.match(p)) or None
+#     return None
+#
+#
+# CTX_RE = re.compile(r"(docs[/\\]context[/\\][^\s\"'`]+\.md|AGENTS\.md|CLAUDE\.md)")
+#
+#
+# def claude_sessions(files, since):
+#     """
+#     Una voce per sessione. Le chiamate si contano per id del messaggio, su TUTTI i file
+#     insieme: una sessione ripresa puo' ricopiare la storia in un file nuovo, e un
+#     messaggio in streaming compare su piu' righe. Per ogni id vale l'ultimo usage.
+#     """
+#     calls = {}                      # id -> dati della chiamata
+#     sessions = defaultdict(lambda: {"compactions": 0, "files": set(), "reads": []})
+#     tool_uses, seen_results = {}, set()
+#     for f in files:
+#         for d in iter_jsonl(f):
+#             sid = d.get("sessionId") or f.stem
+#             s = sessions[sid]
+#             s["files"].add(f.name)
+#             t = d.get("type")
+#             if t == "system" and d.get("subtype") == "compact_boundary":
+#                 s["compactions"] += 1
+#             if t == "assistant":
+#                 m = d.get("message") or {}
+#                 u = m.get("usage")
+#                 mid = m.get("id") or d.get("requestId")
+#                 if not mid or not isinstance(u, dict) or m.get("model") == "<synthetic>":
+#                     continue
+#                 ts = parse_ts(d.get("timestamp"))
+#                 prev = calls.get(mid)
+#                 # La sessione e l'ora sono quelle della prima comparsa; l'usage l'ultimo.
+#                 calls[mid] = {"sid": prev["sid"] if prev else sid,
+#                               "ts": prev["ts"] if prev else ts, "u": u,
+#                               "model": m.get("model"),
+#                               "side": bool(d.get("isSidechain"))}
+#                 for b in m.get("content") or []:
+#                     if isinstance(b, dict) and b.get("type") == "tool_use":
+#                         tool_uses[b.get("id")] = (b.get("name"), b.get("input") or {})
+#             elif t == "user":
+#                 content = (d.get("message") or {}).get("content")
+#                 for b in content if isinstance(content, list) else []:
+#                     if not isinstance(b, dict) or b.get("type") != "tool_result":
+#                         continue
+#                     tid = b.get("tool_use_id")
+#                     if tid in seen_results:
+#                         continue
+#                     name, inp = tool_uses.get(tid, (None, {}))
+#                     target = is_read(name, inp)
+#                     docs = sorted({x.replace("\\", "/")
+#                                    for x in CTX_RE.findall(target)}) if target else []
+#                     if docs:
+#                         seen_results.add(tid)
+#                         c = b.get("content")
+#                         text = c if isinstance(c, str) else "".join(
+#                             x.get("text", "") for x in c or [] if isinstance(x, dict))
+#                         # Un comando che mostra piu' documenti: i caratteri si dividono
+#                         # in parti uguali. Il totale e' esatto, la ripartizione no.
+#                         for doc in docs:
+#                             s["reads"].append((doc, len(text) / len(docs),
+#                                                parse_ts(d.get("timestamp"))))
+#
+#     by_sid = defaultdict(list)
+#     for c in calls.values():
+#         by_sid[c["sid"]].append(c)
+#     out = []
+#     for sid, cs in by_sid.items():
+#         cs.sort(key=lambda c: c["ts"] or datetime.min.replace(tzinfo=timezone.utc))
+#         start = cs[0]["ts"]
+#         if since and start and start < since:
+#             continue
+#         # read_rate: somma, chiamata per chiamata, del prezzo di lettura del suo modello;
+#         # write_rate: prezzo di scrittura (1 ora) del modello della prima chiamata. Servono
+#         # a dire quanto vale un blocco fisso di N token su QUESTE chiamate.
+#         agg = {"in": 0, "w5": 0, "w1": 0, "r": 0, "out": 0, "cost": 0.0,
+#                "cost_known": True, "read_rate": 0.0, "write_rate": 0.0}
+#         models = set()
+#         ctx_max, first_ctx = 0, None
+#         for c in cs:
+#             u = c["u"]
+#             cw = u.get("cache_creation_input_tokens", 0) or 0
+#             det = u.get("cache_creation") or {}
+#             w1 = det.get("ephemeral_1h_input_tokens", 0) or 0
+#             w5 = det.get("ephemeral_5m_input_tokens", cw - w1) or 0
+#             if w1 + w5 != cw:          # dettaglio assente o incoerente: tutto a 5 minuti
+#                 w1, w5 = 0, cw
+#             i, r, o = (u.get("input_tokens", 0) or 0, u.get("cache_read_input_tokens", 0)
+#                        or 0, u.get("output_tokens", 0) or 0)
+#             agg["in"] += i; agg["w5"] += w5; agg["w1"] += w1; agg["r"] += r; agg["out"] += o
+#             models.add(c["model"])
+#             p = price_of(c["model"])
+#             if p is None:
+#                 agg["cost_known"] = False
+#             else:
+#                 pin, pout, pr = p
+#                 agg["read_rate"] += pr
+#                 if not agg["write_rate"]:
+#                     agg["write_rate"] = pin * WRITE_1H
+#                 agg["cost"] += (i * pin + w5 * pin * WRITE_5M + w1 * pin * WRITE_1H
+#                                 + r * pr + o * pout) / 1e6
+#             ctx = i + cw + r
+#             if not c["side"]:
+#                 ctx_max = max(ctx_max, ctx)
+#                 if first_ctx is None:
+#                     first_ctx = ctx
+#         main = [c for c in cs if not c["side"]]
+#         out.append({
+#             "sid": sid, "start": start, "end": cs[-1]["ts"],
+#             "calls": len(main), "sub_calls": len(cs) - len(main),
+#             "first_ctx": first_ctx or 0, "ctx_max": ctx_max,
+#             "compactions": sessions[sid]["compactions"],
+#             "models": sorted(m for m in models if m), "reads": sessions[sid]["reads"],
+#             **agg,
+#         })
+#     out.sort(key=lambda s: s["start"] or datetime.min.replace(tzinfo=timezone.utc))
+#     return out
+#
+#
+# # --------------------------------------------------------------------- Codex: sessioni
+#
+# def codex_home() -> Path:
+#     return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+#
+#
+# def codex_sessions(roots, since):
+#     base = codex_home() / "sessions"
+#     if not base.is_dir():
+#         return []
+#     out = []
+#     for f in base.rglob("rollout-*.jsonl"):
+#         cwd, model, start = None, None, None
+#         last_total, calls, ctx_max, first_ctx = None, 0, 0, None
+#         for d in iter_jsonl(f):
+#             p = d.get("payload") or {}
+#             if d.get("type") == "session_meta":
+#                 cwd = p.get("cwd")
+#                 start = parse_ts(p.get("timestamp") or d.get("timestamp"))
+#                 if cwd and not inside(cwd, roots):
+#                     break
+#             elif d.get("type") == "turn_context" and p.get("model"):
+#                 model = p.get("model")
+#             elif d.get("type") == "event_msg" and p.get("type") == "token_count":
+#                 info = p.get("info") or {}
+#                 total, last = info.get("total_token_usage"), info.get("last_token_usage")
+#                 if not total or total == last_total:
+#                     continue
+#                 last_total = total
+#                 calls += 1
+#                 ctx = (last or {}).get("input_tokens", 0) or 0
+#                 ctx_max = max(ctx_max, ctx)
+#                 if first_ctx is None:
+#                     first_ctx = ctx
+#         if not cwd or not inside(cwd, roots) or not calls:
+#             continue
+#         if since and start and start < since:
+#             continue
+#         out.append({"file": f.name, "start": start, "model": model, "calls": calls,
+#                     "first_ctx": first_ctx or 0, "ctx_max": ctx_max,
+#                     "in": last_total.get("input_tokens", 0),
+#                     "cached": last_total.get("cached_input_tokens", 0),
+#                     "out": last_total.get("output_tokens", 0)})
+#     out.sort(key=lambda s: s["start"] or datetime.min.replace(tzinfo=timezone.utc))
+#     return out
+#
+#
+# # ------------------------------------------------------------ traccia dell'iniezione
+#
+# LOG_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}\s+(?:(\S+)\s+)?SessionStart"
+#                     r"\s+iniettati (\d+) caratteri")
+#
+#
+# def injection_trend(root: Path):
+#     """Per giorno: iniezioni e caratteri massimi, dalle tracce degli hook (nuova e vecchia)."""
+#     g = core.git_dir(root)
+#     days = defaultdict(lambda: [0, 0])
+#     for name in ("agent-hooks.log", "claude-hooks.log"):
+#         p = g / name if g else None
+#         if not p or not p.is_file():
+#             continue
+#         for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+#             m = LOG_RE.match(line)
+#             if m:
+#                 d = days[m.group(1)]
+#                 d[0] += 1
+#                 d[1] = max(d[1], int(m.group(3)))
+#     return sorted(days.items())
+#
+#
+# # ------------------------------------------------------------------------- resoconto
+#
+# def report(root: Path, extra, giorni, as_json):
+#     roots = [norm(root.resolve())] + [norm(Path(e).resolve()) for e in extra]
+#     since = (datetime.now(timezone.utc) - timedelta(days=giorni)) if giorni else None
+#     fixed = current_fixed(root)
+#     measure = load_measure(root)
+#     cpt, cpt_src = chars_per_token(measure)
+#     other_cwds = set()
+#     sessions = claude_sessions(
+#         claude_files_for(roots, [root.resolve()] + [Path(e).resolve() for e in extra],
+#                          other_cwds), since)
+#     cx = codex_sessions(roots, since)
+#     trend = injection_trend(root)
+#
+#     if as_json:
+#         def enc(o):
+#             return o.isoformat() if isinstance(o, datetime) else str(o)
+#         fixed.pop("injection_text", None)
+#         print(json.dumps({"fixed": fixed, "measure": measure, "chars_per_token": cpt,
+#                           "claude_sessions": sessions, "codex_sessions": cx,
+#                           "injection_trend": trend}, default=enc, ensure_ascii=False,
+#                          indent=1))
+#         return 0
+#
+#     W = 78
+#     print("=" * W)
+#     print(f"context_cost — {root}")
+#     print("[misurato] = registrato dall'agente o dalla misura esatta   "
+#           "[stimato] = calcolato")
+#     print("=" * W)
+#
+#     # 1. Contesto fisso, oggi
+#     print("\n1. CONTESTO FISSO CHE QUESTO IMPIANTO AGGIUNGE A OGNI SESSIONE (oggi)")
+#     fresh = bool(measure and measure.get("instructions_sha") == fixed["instructions_sha"]
+#                  and measure.get("injection_sha") == fixed["injection_sha"])
+#     rows = [("istruzioni (" + (", ".join(fixed["instruction_files"]) or "nessuna") + ")",
+#              fixed["instructions_chars"], "instructions_tokens"),
+#             ("iniezione dell'hook di avvio" + (" (RIDOTTA a indice: oltre il tetto)"
+#                                                if fixed["injection_reduced"] else ""),
+#              fixed["injection_chars"], "injection_tokens")]
+#     tot_tok = 0
+#     for label, chars, key in rows:
+#         if fresh:
+#             tok, tag = measure[key], "[misurato]"
+#         else:
+#             tok, tag = round(chars / cpt), "[stimato]"
+#         tot_tok += tok
+#         print(f"  {label}")
+#         print(f"      {num(chars)} caratteri  ->  {num(tok)} token {tag}")
+#     print(f"  totale: {num(tot_tok)} token, in ogni chiamata al modello della sessione")
+#     if fresh:
+#         print(f"  misura del {measure['date']} con Claude Code {measure.get('claude_version')}"
+#               f", modello {measure.get('model')}; base dell'harness "
+#               f"{num(measure['base_tokens'])} token [misurato]")
+#     elif measure:
+#         print(f"  L'ultima misura ({measure['date']}) e' di contenuti diversi da quelli di "
+#               f"oggi: token stimati con il suo rapporto, {cpt:.2f} caratteri/token.")
+#         print("  Per il valore esatto: python scripts/context_cost.py misura")
+#     else:
+#         print(f"  Token stimati a {cpt:.2f} caratteri/token ({cpt_src}).")
+#         print("  Per il valore esatto: python scripts/context_cost.py misura")
+#
+#     # 2. Sessioni Claude Code
+#     print("\n2. SESSIONI DI CLAUDE CODE (trascrizioni in "
+#           f"{claude_home() / 'projects'})" + (f", ultimi {giorni} giorni" if giorni else ""))
+#     if other_cwds:
+#         print("  comprese sessioni aperte quando il repository stava altrove: "
+#               + ", ".join(sorted(other_cwds)))
+#     if not sessions:
+#         print("  nessuna trascrizione con cartella di lavoro in questo repository")
+#     else:
+#         print("  inizio            chiam. sub  compatt.  avvio(tok) max(tok)   costo")
+#         for s in sessions:
+#             st = s["start"].astimezone().strftime("%Y-%m-%d %H:%M") if s["start"] else "?"
+#             print(f"  {st:16s}  {s['calls']:6d} {s['sub_calls']:4d} {s['compactions']:9d}"
+#                   f"  {num(s['first_ctx']):>10s} {num(s['ctx_max']):>9s}  "
+#                   f"{usd(s['cost']) if s['cost_known'] else 'n/d':>8s}")
+#         T = {k: sum(s[k] for s in sessions) for k in ("in", "w5", "w1", "r", "out", "cost",
+#                                                     "calls", "sub_calls")}
+#         known = all(s["cost_known"] for s in sessions)
+#         print(f"  totale: {len(sessions)} sessioni, {num(T['calls'])} chiamate "
+#               f"(+{num(T['sub_calls'])} di sottoagenti)")
+#         print(f"    token [misurato]: input {num(T['in'])} · scritti in cache "
+#               f"{num(T['w5'] + T['w1'])} (di cui 1 ora {num(T['w1'])}) · letti dalla cache "
+#               f"{num(T['r'])} · output {num(T['out'])}")
+#         print(f"    costo a listino API [stimato]: {usd(T['cost'])}"
+#               + ("" if known else "  (esclusi i modelli senza prezzo: "
+#                  + ", ".join(sorted({m for s in sessions if not s['cost_known']
+#                                      for m in s['models']})) + ")"))
+#         used = sorted({re.sub(r"-\d{8}$", "", m) for s in sessions for m in s["models"]
+#                        if price_of(m)})
+#         unverified = [m for m in used if m not in VERIFIED_PRICES]
+#         print("      token misurati per prezzo di listino; listino confrontato con il "
+#               "costo calcolato da Claude Code per: "
+#               + ", ".join(m for m in used if m in VERIFIED_PRICES)
+#               + (f"; NON verificato per: {', '.join(unverified)}" if unverified else ""))
+#         allc = T["calls"] + T["sub_calls"]
+#         if allc:
+#             print(f"    contesto medio per chiamata [misurato]: "
+#                   f"{num(round((T['in'] + T['w5'] + T['w1'] + T['r']) / allc))} token")
+#         # Quanto del totale e' il contesto fisso di oggi, a parita' di chiamate.
+#         if T["calls"]:
+#             share = tot_tok * sum(s["read_rate"] + s["write_rate"] for s in sessions) / 1e6
+#             print(f"    il contesto fisso di oggi ({num(tot_tok)} token) su queste chiamate "
+#                   f"varrebbe ~{usd(share)} [stimato: una scrittura per sessione, poi una "
+#                   f"lettura a chiamata, al prezzo del modello di ciascuna]")
+#         reads = defaultdict(lambda: [0, 0])
+#         for s in sessions:
+#             for path, chars, _ in s["reads"]:
+#                 reads[path][0] += 1
+#                 reads[path][1] += chars
+#         if reads:
+#             print("  documenti di contesto letti dall'agente (per intero o in parte):")
+#             for path, (n, chars) in sorted(reads.items(), key=lambda kv: -kv[1][1])[:10]:
+#                 print(f"    {path:40s} {n:4d} letture  {num(round(chars)):>10s} caratteri"
+#                       f"  ~{num(round(chars / cpt))} token [stimato]")
+#
+#     # 3. Codex
+#     print("\n3. SESSIONI DI CODEX (" + str(codex_home() / "sessions") + ")")
+#     if not cx:
+#         print("  nessuna sessione con cartella di lavoro in questo repository")
+#     else:
+#         for s in cx:
+#             st = s["start"].astimezone().strftime("%Y-%m-%d %H:%M") if s["start"] else "?"
+#             print(f"  {st}  {s['model'] or '?':14s} {s['calls']:5d} chiamate  avvio "
+#                   f"{num(s['first_ctx'])}  max {num(s['ctx_max'])} token [misurato]")
+#         print(f"  totale token [misurato]: input {num(sum(s['in'] for s in cx))} (di cui "
+#               f"in cache {num(sum(s['cached'] for s in cx))}) · output "
+#               f"{num(sum(s['out'] for s in cx))}. Costi non calcolati: listino non noto "
+#               f"allo strumento.")
+#
+#     # 4. Traccia
+#     print("\n4. INIEZIONE DI AVVIO NEL TEMPO (traccia degli hook in .git/)")
+#     if not trend:
+#         print("  nessuna traccia")
+#     else:
+#         for day, (n, mx) in trend[-14:]:
+#             print(f"  {day}  {n:3d} avvii   max {num(mx):>9s} caratteri [misurato]"
+#                   f"  ~{num(round(mx / cpt))} token [stimato]")
+#     print()
+#     return 0
+#
+#
+# # --------------------------------------------------------------------------- misura
+#
+# def run_claude(cwd: Path):
+#     exe = shutil.which("claude") or "claude"
+#     r = subprocess.run([exe, "-p", PROMPT, "--max-turns", "1", "--output-format",
+#                         "json"], cwd=str(cwd), capture_output=True, text=True,
+#                        encoding="utf-8", errors="replace", timeout=300)
+#     try:
+#         d = json.loads(r.stdout)
+#     except ValueError:
+#         raise RuntimeError(f"Claude Code non ha dato JSON (uscita {r.returncode}): "
+#                            f"{(r.stderr or r.stdout)[-400:]}")
+#     u = d.get("usage") or {}
+#     total = sum(u.get(k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
+#                                            "cache_read_input_tokens"))
+#     model = next(iter(d.get("modelUsage") or {}), None)
+#     return total, float(d.get("total_cost_usd") or 0.0), model
+#
+#
+# def measure(root: Path):
+#     if shutil.which("claude") is None:
+#         print("claude non e' nel PATH: la misura usa Claude Code headless.")
+#         return 1
+#     fixed = current_fixed(root)
+#     try:
+#         ver = subprocess.run([shutil.which("claude"), "--version"], capture_output=True, text=True,
+#                              timeout=60).stdout.strip()
+#     except (OSError, subprocess.SubprocessError):
+#         ver = "?"
+#     print(f"Misura esatta per {root}")
+#     print(f"Claude Code {ver}. Quattro chiamate brevi al modello, in una copia usa e getta.")
+#     tmp = Path(tempfile.mkdtemp(prefix="context-cost-"))
+#     spent = 0.0
+#     try:
+#         subprocess.run(["git", "init", "-q", "."], cwd=str(tmp), check=True)
+#         base1, c, model = run_claude(tmp); spent += c
+#         base2, c, _ = run_claude(tmp); spent += c
+#         print(f"  base dell'harness: {num(base1)} e {num(base2)} token")
+#         if base1 != base2:
+#             print("  La base non e' stabile fra due esecuzioni identiche: una differenza "
+#                   "non misurerebbe solo i file. Misura interrotta, niente salvato.")
+#             return 1
+#         for rel in fixed["instruction_files"]:
+#             dst = tmp / rel
+#             dst.parent.mkdir(parents=True, exist_ok=True)
+#             shutil.copyfile(root / rel, dst)
+#         with_instr, c, _ = run_claude(tmp); spent += c
+#         # L'hook stampa il testo che l'hook vero inietterebbe OGGI in questo repository.
+#         (tmp / "injection.txt").write_text(fixed["injection_text"], encoding="utf-8")
+#         (tmp / "print_injection.py").write_text(
+#             "import sys\nsys.stdout.reconfigure(encoding='utf-8')\n"
+#             "sys.stdout.write(open(__file__.replace('print_injection.py','injection.txt'),"
+#             "encoding='utf-8').read())\n", encoding="utf-8")
+#         settings = {"hooks": {"SessionStart": [{"hooks": [{
+#             "type": "command",
+#             "command": f'{Path(sys.executable).as_posix()} '
+#                        f'"{(tmp / "print_injection.py").as_posix()}"',
+#             "timeout": 30}]}]}}
+#         (tmp / ".claude").mkdir(exist_ok=True)
+#         (tmp / ".claude" / "settings.local.json").write_text(json.dumps(settings),
+#                                                              encoding="utf-8")
+#         with_inj, c, _ = run_claude(tmp); spent += c
+#     except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+#         print(f"  Misura fallita: {exc}")
+#         return 1
+#     finally:
+#         shutil.rmtree(tmp, ignore_errors=True)
+#
+#     instr_tok = with_instr - base1
+#     inj_tok = with_inj - with_instr
+#     if fixed["injection_chars"] and inj_tok <= 0:
+#         print("  L'iniezione non risulta nel contesto: l'hook della copia non e' partito. "
+#               "Misura non salvata.")
+#         return 1
+#     result = {
+#         "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "claude_version": ver,
+#         "model": model, "base_tokens": base1,
+#         "instruction_files": fixed["instruction_files"],
+#         "instructions_chars": fixed["instructions_chars"],
+#         "instructions_sha": fixed["instructions_sha"], "instructions_tokens": instr_tok,
+#         "injection_chars": fixed["injection_chars"],
+#         "injection_sha": fixed["injection_sha"], "injection_tokens": inj_tok,
+#         "cost_usd": round(spent, 4),
+#     }
+#     g = core.git_dir(root)
+#     if g:
+#         (g / MEASURE_FILE).write_text(json.dumps(result, indent=1, ensure_ascii=False),
+#                                       encoding="utf-8")
+#     print(f"  istruzioni ({', '.join(fixed['instruction_files']) or 'nessuna'}): "
+#           f"{num(instr_tok)} token [misurato]")
+#     print(f"  iniezione dell'hook di avvio: {num(inj_tok)} token [misurato]")
+#     print(f"  modello {model}; costo della misura ${spent:.4f} (calcolato da Claude Code)")
+#     print(f"  salvata in .git/{MEASURE_FILE}")
+#     return 0
+#
+#
+# # ---------------------------------------------------------------------------- main
+#
+# def main(argv=None):
+#     ap = argparse.ArgumentParser(description="Quanto pesa il contesto, misurato.")
+#     ap.add_argument("comando", nargs="?", choices=["misura"],
+#                     help="misura: misura esatta dei token fissi (chiama Claude Code)")
+#     ap.add_argument("--giorni", type=int, default=0,
+#                     help="solo le sessioni iniziate negli ultimi N giorni")
+#     ap.add_argument("--anche", action="append", default=[], metavar="DIR",
+#                     help="conta anche le sessioni aperte in questa cartella")
+#     ap.add_argument("--json", action="store_true", help="uscita per programmi")
+#     a = ap.parse_args(argv)
+#     root = core.repo_root() or Path(__file__).resolve().parent.parent
+#     if a.comando == "misura":
+#         return measure(Path(root))
+#     return report(Path(root), a.anche, a.giorni, a.json)
+#
+#
+# if __name__ == "__main__":
+#     sys.exit(main())
+#
 # ---- AGENT-CONTEXT-FILE: scripts/docs_lint.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
@@ -2687,7 +3612,7 @@ if __name__ == "__main__":
 #
 # Non guarda il prodotto: guarda i documenti che lo descrivono.
 #
-# Cinque controlli:
+# Sei controlli:
 #
 #   1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
 #                         ricomparsi nel codice. La lista NON e' scritta qui: viene
@@ -2701,6 +3626,9 @@ if __name__ == "__main__":
 #   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
 #   5. FRESCHEZZA       — quanti commit hanno toccato il codice dopo il punto in cui
 #                         status.md dichiara di essere riconciliato.
+#   6. PESO             — quanto testo l'hook di avvio mette nel contesto a ogni
+#                         sessione. Avvisa se i blocchi session-start superano il tetto
+#                         di config.toml: in quel caso l'hook inietta solo l'indice.
 #
 # Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
 # esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
@@ -3145,6 +4073,33 @@ if __name__ == "__main__":
 #
 # # ------------------------------------------------------------------------- main
 #
+# # ---------------------------------------------------------------- 6. peso all'avvio
+#
+# def check_weight(rep: Report):
+#     """
+#     Cosa entra nel contesto dell'agente a ogni avvio per opera di questo impianto. Solo
+#     caratteri: il lint non ha un tokenizer, i token veri li misura context_cost.py.
+#     """
+#     inj = core.build_injection(ROOT, CONFIG)
+#     if inj is None:
+#         rep.note("  nessun status.md: l'hook di avvio non inietta niente")
+#     else:
+#         rep.note(f"  iniezione di avvio: {len(inj['text'])} caratteri  —  blocchi "
+#                  f"session-start: {inj['blocks_chars']} su un tetto di {inj['budget']}")
+#         if inj["reduced"]:
+#             rep.warn("PESO", f"i blocchi session-start di {core.STATUS_FILE} fanno "
+#                              f"{inj['blocks_chars']} caratteri, oltre il tetto di "
+#                              f"{inj['budget']}: l'hook inietta solo il loro indice. "
+#                              f"Riportali sotto il tetto: vedi la guida, «status.md "
+#                              f"invecchia male».")
+#     for name in ("AGENTS.md", "CLAUDE.md"):
+#         p = ROOT / name
+#         if p.is_file():
+#             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
+#                      f"(piu' cio' che importa)")
+#     rep.note("  i token veri: python scripts/context_cost.py")
+#
+#
 # CHECKS = [
 #     ("0. CONFIGURAZIONE  — cosa viene considerato codice", check_config),
 #     ("1. FEATURE BANDITE — simboli che non devono tornare", check_banned),
@@ -3152,6 +4107,7 @@ if __name__ == "__main__":
 #     ("3. EVIDENZA        — verificato/dedotto/assunto", check_evidence),
 #     ("4. LINK E ANCORE   — i rimandi risolvono", check_links),
 #     ("5. FRESCHEZZA      — status.md rispetto al codice", check_freshness),
+#     ("6. PESO            — cosa entra nel contesto a ogni avvio", check_weight),
 # ]
 #
 #
