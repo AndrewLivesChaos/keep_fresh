@@ -25,6 +25,12 @@ exclude = []
 # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
 # pesa davvero in token lo misura: python scripts/context_cost.py
 max_injection_chars = 8000
+# L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
+# il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
+# volta e dice quanto costa riprendere. Reinviato, il messaggio passa.
+resume_warn_tokens = 100000
+# Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
+resume_cache_minutes = 60
 
 # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
 # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza

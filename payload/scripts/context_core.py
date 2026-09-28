@@ -18,9 +18,11 @@ Nessuna dipendenza fuori dalla libreria standard. Non stampa niente e non esce: 
 chi lo importa cosa fare degli errori.
 """
 
+import json
 import re
 import subprocess
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 CONTEXT_DIR = "docs/context"
@@ -402,3 +404,174 @@ def build_injection(root, cfg=None):
             "=== fine stato del progetto ==="]
     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
             "reduced": reduced, "levels": levels}
+
+
+# ------------------------------------------------------------------------------ listino
+
+# $ per milione di token: (input, output, lettura dalla cache). La scrittura in cache
+# costa 1,25x l'input con durata 5 minuti e 2x con durata 1 ora; la lettura 0,1x l'input,
+# salvo dove il listino dice altro (Opus 5.5: $0,20; Fable 5.1: $0,25). Fonte: tabella
+# dei modelli Anthropic aggiornata al 2026-06-24, con Claude Opus 5.5 al lancio.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00, 0.20),
+    "claude-opus-5": (5.00, 25.00, 0.50),
+    "claude-fable-5-1": (10.00, 50.00, 0.25),
+    "claude-fable-5": (10.00, 50.00, 1.00),
+    "claude-opus-4-8": (5.00, 25.00, 0.50),
+    "claude-opus-4-7": (5.00, 25.00, 0.50),
+    "claude-opus-4-6": (5.00, 25.00, 0.50),
+    "claude-sonnet-5": (2.00, 10.00, 0.20),
+    "claude-sonnet-4-6": (3.00, 15.00, 0.30),
+    "claude-haiku-4-5": (1.00, 5.00, 0.10),
+}
+WRITE_5M, WRITE_1H = 1.25, 2.0
+# I modelli per cui il costo calcolato con questo listino e' stato confrontato con quello
+# che Claude Code calcola da se' (total_cost_usd di `claude -p`) su una sessione con
+# scrittura e lettura in cache, e coincideva alla settima cifra decimale: 2026-09-26 Opus
+# 5.5, 2026-09-28 gli altri tre. Per gli altri si dichiara che il prezzo non e' verificato.
+VERIFIED_PRICES = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}
+
+
+def price_of(model):
+    if not model:
+        return None
+    if model in PRICES:
+        return PRICES[model]
+    # Un id con data in coda (claude-x-20260101) vale come il suo nome base.
+    return PRICES.get(re.sub(r"-\d{8}$", "", model))
+
+
+# ----------------------------------------------------------------- ripresa dopo una pausa
+
+# Sotto questa soglia di contesto riprendere costa poco e l'avviso sarebbe solo rumore.
+DEFAULT_RESUME_WARN_TOKENS = 100_000
+# Durata della cache quando la trascrizione non la dice (Codex, o nessuna scrittura
+# recente in una trascrizione di Claude Code).
+DEFAULT_CACHE_MINUTES = 60
+# Quanto della coda di una trascrizione si legge per trovare l'ultima chiamata: le
+# trascrizioni arrivano a parecchi MB, e l'hook gira a ogni messaggio.
+TAIL_BYTES = 4 * 1024 * 1024
+
+
+def resume_settings(cfg):
+    """(soglia di token, durata della cache di ripiego in minuti) da [context]."""
+    t = config_table(cfg, "context")
+
+    def pos_int(key, default):
+        v = t.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else default
+    return (pos_int("resume_warn_tokens", DEFAULT_RESUME_WARN_TOKENS),
+            pos_int("resume_cache_minutes", DEFAULT_CACHE_MINUTES))
+
+
+def _parse_ts(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tail_records(path):
+    """I record JSON della coda della trascrizione, dal piu' recente."""
+    p = Path(path)
+    size = p.stat().st_size
+    with open(p, "rb") as fh:
+        if size > TAIL_BYTES:
+            fh.seek(size - TAIL_BYTES)
+            fh.readline()                       # la prima riga e' tagliata a meta'
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    for line in reversed(lines):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(d, dict):
+            yield d
+
+
+def last_call(transcript_path):
+    """
+    L'ultima chiamata al modello registrata nella trascrizione, di Claude Code o di
+    Codex: {"ts", "context", "model", "cache_minutes"}, o None se non ce n'e'.
+
+    context e' il contesto di quella chiamata in token, come l'ha registrato l'agente:
+    per Claude Code input + scritti + letti dalla cache, per Codex input_tokens (che
+    comprende la parte in cache). cache_minutes e' la durata della cache se la
+    trascrizione la dice (Claude Code: 60 se l'ultima scrittura era da 1 ora, 5 se da 5
+    minuti), altrimenti None.
+    """
+    found, cache_minutes, model = None, None, None
+    for d in _tail_records(transcript_path):
+        t = d.get("type")
+        if t == "assistant" and not d.get("isSidechain"):          # Claude Code
+            m = d.get("message") or {}
+            u = m.get("usage")
+            if not isinstance(u, dict) or m.get("model") == "<synthetic>":
+                continue
+            if found is None:
+                ctx = sum(u.get(k, 0) or 0 for k in (
+                    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+                found = {"ts": _parse_ts(d.get("timestamp")), "context": ctx,
+                         "model": m.get("model")}
+            det = u.get("cache_creation") or {}
+            if det.get("ephemeral_1h_input_tokens"):
+                cache_minutes = 60
+            elif det.get("ephemeral_5m_input_tokens"):
+                cache_minutes = 5
+            if cache_minutes:
+                break
+        elif t == "event_msg":                                        # Codex
+            p = d.get("payload") or {}
+            last = (p.get("info") or {}).get("last_token_usage") if \
+                p.get("type") == "token_count" else None
+            if last and found is None:
+                found = {"ts": _parse_ts(d.get("timestamp")),
+                         "context": last.get("input_tokens", 0) or 0, "model": None}
+        elif t == "turn_context" and found is not None and model is None:
+            model = (d.get("payload") or {}).get("model")
+            break
+    if found is None or found["ts"] is None:
+        return None
+    if found["model"] is None:
+        found["model"] = model
+    found["cache_minutes"] = cache_minutes
+    return found
+
+
+def resume_warning(transcript_path, now, cfg):
+    """
+    Il testo dell'avviso da dare prima di riprendere una sessione dopo una pausa, o None
+    se non serve: pausa piu' corta della cache, o contesto sotto la soglia. Il costo e'
+    una stima: il contesto e' quello registrato, il prezzo e' il listino.
+    """
+    call = last_call(transcript_path)
+    if call is None:
+        return None, None
+    min_tokens, fallback_min = resume_settings(cfg)
+    minutes = call["cache_minutes"] or fallback_min
+    gap = (now - call["ts"]).total_seconds() / 60
+    if gap <= minutes or call["context"] < min_tokens:
+        return None, call
+    h, m = divmod(int(gap), 60)
+    pausa = f"{h} h {m} min" if h else f"{m} min"
+    ctx = f"{call['context']:,}".replace(",", ".")
+    lines = [f"Pausa di {pausa} dall'ultima chiamata al modello: la cache del contesto "
+             f"(durata {minutes} min) e' scaduta. Il contesto di questa sessione e' di "
+             f"{ctx} token."]
+    p = price_of(call["model"])
+    if p:
+        write = call["context"] * p[0] * WRITE_1H / 1e6
+        read = call["context"] * p[2] / 1e6
+        lines.append(f"Riprendere adesso costa circa ${write:.2f} solo per riscriverlo in "
+                     f"cache, poi circa ${read:.2f} a ogni chiamata per rileggerlo (stima, "
+                     f"listino {call['model']}).")
+    else:
+        lines.append("Riprendere adesso lo fa rielaborare tutto da capo, e ogni chiamata "
+                     "successiva lo rilegge per intero.")
+    lines += ["",
+              "- Se ti serve tutto quel contesto: reinvia lo stesso messaggio, non ti "
+              "fermo una seconda volta.",
+              "- Altrimenti: /clear (non chiama il modello; azzera il contesto e l'hook "
+              "reinietta lo stato) oppure una sessione nuova, e riparti dal punto di "
+              f"ripresa in {STATUS_FILE}."]
+    return "\n".join(lines), call

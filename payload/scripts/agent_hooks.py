@@ -5,6 +5,7 @@ agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente
 
     python scripts/agent_hooks.py session-start --agent <nome>
     python scripts/agent_hooks.py stop          --agent <nome>
+    python scripts/agent_hooks.py prompt        --agent <nome>
 
 Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -19,6 +20,10 @@ il protocollo usato e' quello che gli agenti supportati hanno in comune.
   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
+  prompt         prima che un messaggio dell'utente parta (UserPromptSubmit): se la
+                 sessione riprende dopo una pausa piu' lunga della cache con un contesto
+                 grande, lo ferma UNA volta e dice quanto costa riprendere. Reinviato,
+                 passa. Soglie in [context] di config.toml.
 
 Perche' JSON e non l'uscita 2: provato il 2026-09-17 su Windows, Codex 0.154.0 tratta
 l'uscita 2 di Stop come un errore e chiude comunque; la decisione JSON con uscita 0
@@ -197,9 +202,57 @@ def stop(data: dict) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------ prompt
+
+def prompt(data: dict) -> int:
+    """
+    Prima che un messaggio dell'utente parta: se la sessione riprende dopo una pausa piu'
+    lunga della cache e il contesto e' grande, ferma il messaggio UNA volta e dice quanto
+    costa riprendere. Il messaggio fermato non arriva al modello e non costa niente.
+    Reinviato, passa. I comandi che iniziano con / passano sempre: fermare un /clear
+    sarebbe fermare proprio il rimedio.
+
+    Il formato che ferma e' {"decision": "block", "reason": ...}: provato il 2026-09-28
+    su Claude Code 2.1.283 (zero chiamate al modello, il motivo e il messaggio originale
+    mostrati all'utente); per Codex e' il formato della documentazione, non provato.
+    """
+    if core is None:
+        return 0
+    text = str(data.get("prompt") or data.get("prompt_text") or "")
+    if text.lstrip().startswith("/"):
+        log("Prompt", "ok (comando /)")
+        return 0
+    tp = data.get("transcript_path")
+    if not tp or not Path(tp).is_file():
+        log("Prompt", "ok (nessuna trascrizione)")
+        return 0
+    root = core.repo_root()
+    g = core.git_dir(root) if root else None
+    cfg, _ = core.load_config(root) if root else ({}, None)
+    msg, call = core.resume_warning(tp, datetime.now().astimezone(), cfg)
+    if msg is None:
+        log("Prompt", "ok (nessuna chiamata precedente)" if call is None else
+                      f"ok (contesto {call['context']} token, pausa entro la cache o "
+                      f"contesto sotto la soglia)")
+        return 0
+    # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi la
+    # prossima pausa della stessa sessione avvisa di nuovo.
+    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or "ignota")) or "ignota"
+    flag = (g / f"resume-warn-{sid}-{int(call['ts'].timestamp())}.flag") if g else None
+    if flag is not None and flag.exists():
+        log("Prompt", f"ok (avviso di ripresa gia' dato; contesto {call['context']} token)")
+        return 0
+    if flag is not None:
+        flag.write_text("", encoding="utf-8")
+    log("Prompt", f"FERMATO: ripresa dopo la pausa, contesto {call['context']} token")
+    print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+    return 0
+
+
 # -------------------------------------------------------------------------------- main
 
-EVENTS = {"session-start": ("SessionStart", session_start), "stop": ("Stop", stop)}
+EVENTS = {"session-start": ("SessionStart", session_start), "stop": ("Stop", stop),
+          "prompt": ("Prompt", prompt)}
 
 
 def main(argv) -> int:

@@ -67,28 +67,11 @@ import context_core as core  # noqa: E402
 
 # ------------------------------------------------------------------------- listino
 
-# $ per milione di token: (input, output, lettura dalla cache). La scrittura in cache
-# costa 1,25x l'input con durata 5 minuti e 2x con durata 1 ora; la lettura 0,1x l'input,
-# salvo dove il listino dice altro (Opus 5.5: $0,20; Fable 5.1: $0,25). Fonte: tabella
-# dei modelli Anthropic aggiornata al 2026-06-24, con Claude Opus 5.5 al lancio.
-PRICES = {
-    "claude-opus-5-5": (4.00, 20.00, 0.20),
-    "claude-opus-5": (5.00, 25.00, 0.50),
-    "claude-fable-5-1": (10.00, 50.00, 0.25),
-    "claude-fable-5": (10.00, 50.00, 1.00),
-    "claude-opus-4-8": (5.00, 25.00, 0.50),
-    "claude-opus-4-7": (5.00, 25.00, 0.50),
-    "claude-opus-4-6": (5.00, 25.00, 0.50),
-    "claude-sonnet-5": (2.00, 10.00, 0.20),
-    "claude-sonnet-4-6": (3.00, 15.00, 0.30),
-    "claude-haiku-4-5": (1.00, 5.00, 0.10),
-}
-WRITE_5M, WRITE_1H = 1.25, 2.0
-# I modelli per cui il costo calcolato qui e' stato confrontato con quello che Claude Code
-# calcola da se' (total_cost_usd di `claude -p`) su una sessione con scrittura e lettura
-# in cache, e coincideva alla settima cifra decimale: 2026-09-26 Opus 5.5, 2026-09-28 gli
-# altri tre. Per gli altri il resoconto dice che il prezzo non e' verificato.
-VERIFIED_PRICES = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}
+# Il listino sta in context_core, perche' anche l'avviso di ripresa lo usa: i due devono
+# dare gli stessi numeri.
+PRICES, VERIFIED_PRICES = core.PRICES, core.VERIFIED_PRICES
+WRITE_5M, WRITE_1H = core.WRITE_5M, core.WRITE_1H
+price_of = core.price_of
 
 # Rapporto caratteri/token usato solo finche' non c'e' una `misura` di questo repository.
 # Valore di partenza: nelle sessioni di tre repository di questo impianto (documenti in
@@ -115,16 +98,6 @@ def parse_ts(s):
         return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
-
-
-def price_of(model):
-    if not model:
-        return None
-    if model in PRICES:
-        return PRICES[model]
-    # Un id con data in coda (claude-x-20260101) vale come il suo nome base.
-    base = re.sub(r"-\d{8}$", "", model)
-    return PRICES.get(base)
 
 
 def usd(x):

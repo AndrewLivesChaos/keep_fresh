@@ -129,13 +129,23 @@ Ogni numero è marcato **[misurato]**, cioè registrato dall'agente o dalla misu
 
 ## Gli agenti
 
-Gli hook sono gli stessi per tutti gli agenti (`scripts/agent_hooks.py`). Cambia solo dove
-si agganciano, e cosa resta da fare a te:
+Gli hook sono gli stessi per tutti gli agenti (`scripts/agent_hooks.py`), e sono tre:
+
+- **all'avvio** (`SessionStart`) inietta lo stato del lavoro da `status.md`;
+- **a fine turno** (`Stop`) blocca una volta se il codice è cambiato e `status.md` no;
+- **prima di un tuo messaggio** (`UserPromptSubmit`), se la sessione riprende dopo una
+  pausa più lunga della cache con più di 100 mila token di contesto (soglia in
+  `config.toml`), ferma il messaggio **una volta** e dice quanto costa riprendere. Se lo
+  reinvii passa; se non ti serve tutto quel contesto, `/clear` non chiama il modello e
+  riparte dallo stato. Provato su Claude Code 2.1.283 (Windows, 2026-09-28) con una
+  sessione vera ripresa dopo una pausa simulata; su Codex non provato.
+
+Cambia solo dove si agganciano, e cosa resta da fare a te:
 
 | Agente | Aggancio | Cosa devi fare tu |
 |---|---|---|
 | Claude Code | `.claude/settings.local.json` | niente: partono alla sessione successiva |
-| Codex | `.codex/hooks.json` | aprire Codex nel repository, **fidarti del progetto**, e con `/hooks` **approvare** i due hook. Da rifare se il file cambia |
+| Codex | `.codex/hooks.json` | aprire Codex nel repository, **fidarti del progetto**, e con `/hooks` **approvare** gli hook. Da rifare se il file cambia |
 
 Codex, senza progetto fidato e hook approvati, **salta gli hook del repository senza
 avvisare** (provato il 2026-09-17, Codex 0.154.0, Windows). La diagnosi dello script

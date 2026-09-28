@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-28T11:05:34',
+    'packed_at': '2026-09-28T11:56:57',
     'source': 'context_script',
-    'commit': 'ff070a7',
-    'payload_dirty': False,
-    'payload_sha': '881dcfabe340',
+    'commit': '3400e3c',
+    'payload_dirty': True,
+    'payload_sha': '460b6ed74b93',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -489,6 +489,64 @@ def smoke_test() -> bool:
         finally:
             shutil.rmtree(home, ignore_errors=True)
 
+        # L'avviso di ripresa: ferma una volta dopo una pausa piu' lunga della cache con
+        # un contesto grande, poi lascia passare; mai un comando /, mai una pausa corta o
+        # un contesto piccolo. Trascrizioni finte, di Claude Code e di Codex.
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        def transcript(name, hours_ago, ctx, codex=False):
+            ts = (_dt.now(_tz.utc) - _td(hours=hours_ago)).isoformat().replace("+00:00", "Z")
+            if codex:
+                rows = [{"timestamp": ts, "type": "turn_context",
+                         "payload": {"model": "gpt-prova"}},
+                        {"timestamp": ts, "type": "event_msg", "payload": {
+                            "type": "token_count", "info": {
+                                "last_token_usage": {"input_tokens": ctx},
+                                "total_token_usage": {"input_tokens": ctx}}}}]
+            else:
+                rows = [{"timestamp": ts, "type": "assistant", "message": {
+                    "id": "m", "model": "claude-opus-5-5", "content": [], "usage": {
+                        "input_tokens": 2, "cache_creation_input_tokens": 1000,
+                        "cache_creation": {"ephemeral_1h_input_tokens": 1000},
+                        "cache_read_input_tokens": ctx - 1002, "output_tokens": 5}}}]
+            p = tmp / ".git" / name
+            p.write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+            return p
+
+        def prompt_hook(tp, text="continua", sid="p1"):
+            return run(sys.executable, "scripts/agent_hooks.py", "prompt", "--agent", "prova",
+                       stdin=json.dumps({"session_id": sid, "transcript_path": str(tp),
+                                         "prompt": text}))
+
+        def blocked(r):
+            try:
+                return json.loads(r.stdout).get("decision") == "block"
+            except ValueError:
+                return False
+
+        big = transcript("t-big.jsonl", 3, 200_000)
+        r = prompt_hook(big, "/clear")
+        step("prompt: un comando / passa sempre", r.returncode == 0 and not r.stdout.strip(),
+             r.stdout[-300:])
+        r = prompt_hook(big)
+        step("prompt: pausa di 3 h e contesto di 200 mila token ferma il messaggio",
+             r.returncode == 0 and blocked(r) and "$" in r.stdout, r.stdout[-400:])
+        r = prompt_hook(big)
+        step("prompt: reinviato, il messaggio passa",
+             r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
+        r = prompt_hook(transcript("t-recent.jsonl", 0.5, 200_000), sid="p2")
+        step("prompt: una pausa piu' corta della cache non ferma",
+             r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
+        r = prompt_hook(transcript("t-small.jsonl", 3, 20_000), sid="p3")
+        step("prompt: un contesto piccolo non ferma",
+             r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
+        r = prompt_hook(transcript("t-codex.jsonl", 3, 200_000, codex=True), sid="p4")
+        step("prompt: la trascrizione di Codex si legge e ferma",
+             r.returncode == 0 and blocked(r), r.stdout[-400:])
+        r = prompt_hook(tmp / ".git" / "non-esiste.jsonl", sid="p5")
+        step("prompt: trascrizione assente, passa senza errori",
+             r.returncode == 0 and not r.stdout.strip(), r.stderr[-300:])
+
         # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
         # con un comando che punta allo script che esiste.
         gi = (tmp / ".gitignore").read_text(encoding="utf-8")
@@ -499,8 +557,8 @@ def smoke_test() -> bool:
                         for e in cfg["hooks"][ev] for h in e["hooks"]]
             except (OSError, ValueError, KeyError, TypeError):
                 cmds = []
-            step(f"{agent['label']}: due hook agganciati a {HOOKS_SCRIPT}, senza percorsi",
-                 len(cmds) == 2 and all(HOOK_BOOTSTRAP in c and f"--agent {name}" in c
+            step(f"{agent['label']}: hook agganciati a {HOOKS_SCRIPT}, senza percorsi",
+                 len(cmds) == len(HOOK_EVENTS) and all(HOOK_BOOTSTRAP in c and f"--agent {name}" in c
                                         and str(tmp) not in c and tmp.as_posix() not in c
                                         for c in cmds), f"{cmds}")
             # Il comando agganciato, eseguito davvero da una sottocartella: e' cosi' che
@@ -824,7 +882,8 @@ def add_marker(root: Path, dry: bool) -> str:
 
 HOOKS_SCRIPT = "scripts/agent_hooks.py"
 # (evento come lo chiamano gli agenti, argomento di agent_hooks.py)
-HOOK_EVENTS = [("SessionStart", "session-start"), ("Stop", "stop")]
+HOOK_EVENTS = [("SessionStart", "session-start"), ("Stop", "stop"),
+               ("UserPromptSubmit", "prompt")]
 
 # Gli script di hook delle versioni precedenti, specifici di Claude Code. Riconoscerli
 # serve a migrare gli agganci che li invocano, e a toglierli con --force.
@@ -858,7 +917,7 @@ AGENTS = {
         # Provato il 2026-09-17 su Windows con Codex 0.154.0: senza progetto fidato e
         # senza approvazione, gli hook del repository vengono saltati SENZA avvisi.
         "steps": "Apri Codex in questo repository e accetta di fidarti del progetto; "
-                 "poi, dentro Codex, `/hooks` e approva i due hook. Va rifatto se "
+                 "poi, dentro Codex, `/hooks` e approva gli hook. Va rifatto se "
                  ".codex/hooks.json cambia",
     },
 }
@@ -1576,7 +1635,7 @@ if __name__ == "__main__":
 # docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
 #
 # scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
-# scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
+# scripts/agent_hooks.py       hook di avvio, di fine turno e di ripresa, uguali per ogni agente
 # scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
 # scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
 #
@@ -1993,6 +2052,19 @@ if __name__ == "__main__":
 # stato gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
 # non salta nessun controllo: è già avvenuto a ogni turno precedente.
 #
+# **`UserPromptSubmit`** — prima che un messaggio dell'utente parta. Se la sessione riprende
+# dopo una pausa più lunga della cache del contesto (1 ora per Claude Code, letta dalla
+# trascrizione) e il contesto supera la soglia di `config.toml` (100 mila token di partenza),
+# ferma il messaggio **una volta** e dice quanto costa riprendere: riscrivere tutto il
+# contesto in cache, poi rileggerlo a ogni chiamata. Il messaggio fermato non arriva al
+# modello; reinviato, passa. Non ferma mai un comando `/`: il rimedio è proprio `/clear`,
+# che non chiama il modello, azzera il contesto e fa ripartire `SessionStart`. Serve perché
+# le pause sono il costo che non si vede: su un repository di questo impianto, 21 riprese
+# dopo più di un'ora hanno riscritto 7 milioni di token, circa $72 [stimato da token
+# misurati, trascrizioni di settembre 2026]. Il formato che ferma è
+# `{"decision": "block", "reason": ...}`, provato su Claude Code 2.1.283 il 2026-09-28; su
+# Codex è quello della documentazione, non provato.
+#
 # **Non usare un hook di fine sessione.** Non può bloccare, il suo output viene ignorato, e
 # non scatta se il processo viene ucciso. `SessionStart` + `Stop` chiudono le due estremità e
 # rendono quell'evento irrilevante.
@@ -2213,6 +2285,12 @@ if __name__ == "__main__":
 # # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
 # # pesa davvero in token lo misura: python scripts/context_cost.py
 # max_injection_chars = 8000
+# # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
+# # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
+# # volta e dice quanto costa riprendere. Reinviato, il messaggio passa.
+# resume_warn_tokens = 100000
+# # Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
+# resume_cache_minutes = 60
 #
 # # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
 # # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
@@ -2247,6 +2325,7 @@ if __name__ == "__main__":
 #
 #     python scripts/agent_hooks.py session-start --agent <nome>
 #     python scripts/agent_hooks.py stop          --agent <nome>
+#     python scripts/agent_hooks.py prompt        --agent <nome>
 #
 # Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 # parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -2261,6 +2340,10 @@ if __name__ == "__main__":
 #   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
 #                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
 #                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
+#   prompt         prima che un messaggio dell'utente parta (UserPromptSubmit): se la
+#                  sessione riprende dopo una pausa piu' lunga della cache con un contesto
+#                  grande, lo ferma UNA volta e dice quanto costa riprendere. Reinviato,
+#                  passa. Soglie in [context] di config.toml.
 #
 # Perche' JSON e non l'uscita 2: provato il 2026-09-17 su Windows, Codex 0.154.0 tratta
 # l'uscita 2 di Stop come un errore e chiude comunque; la decisione JSON con uscita 0
@@ -2439,9 +2522,57 @@ if __name__ == "__main__":
 #     return 0
 #
 #
+# # ------------------------------------------------------------------------------ prompt
+#
+# def prompt(data: dict) -> int:
+#     """
+#     Prima che un messaggio dell'utente parta: se la sessione riprende dopo una pausa piu'
+#     lunga della cache e il contesto e' grande, ferma il messaggio UNA volta e dice quanto
+#     costa riprendere. Il messaggio fermato non arriva al modello e non costa niente.
+#     Reinviato, passa. I comandi che iniziano con / passano sempre: fermare un /clear
+#     sarebbe fermare proprio il rimedio.
+#
+#     Il formato che ferma e' {"decision": "block", "reason": ...}: provato il 2026-09-28
+#     su Claude Code 2.1.283 (zero chiamate al modello, il motivo e il messaggio originale
+#     mostrati all'utente); per Codex e' il formato della documentazione, non provato.
+#     """
+#     if core is None:
+#         return 0
+#     text = str(data.get("prompt") or data.get("prompt_text") or "")
+#     if text.lstrip().startswith("/"):
+#         log("Prompt", "ok (comando /)")
+#         return 0
+#     tp = data.get("transcript_path")
+#     if not tp or not Path(tp).is_file():
+#         log("Prompt", "ok (nessuna trascrizione)")
+#         return 0
+#     root = core.repo_root()
+#     g = core.git_dir(root) if root else None
+#     cfg, _ = core.load_config(root) if root else ({}, None)
+#     msg, call = core.resume_warning(tp, datetime.now().astimezone(), cfg)
+#     if msg is None:
+#         log("Prompt", "ok (nessuna chiamata precedente)" if call is None else
+#                       f"ok (contesto {call['context']} token, pausa entro la cache o "
+#                       f"contesto sotto la soglia)")
+#         return 0
+#     # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi la
+#     # prossima pausa della stessa sessione avvisa di nuovo.
+#     sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or "ignota")) or "ignota"
+#     flag = (g / f"resume-warn-{sid}-{int(call['ts'].timestamp())}.flag") if g else None
+#     if flag is not None and flag.exists():
+#         log("Prompt", f"ok (avviso di ripresa gia' dato; contesto {call['context']} token)")
+#         return 0
+#     if flag is not None:
+#         flag.write_text("", encoding="utf-8")
+#     log("Prompt", f"FERMATO: ripresa dopo la pausa, contesto {call['context']} token")
+#     print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+#     return 0
+#
+#
 # # -------------------------------------------------------------------------------- main
 #
-# EVENTS = {"session-start": ("SessionStart", session_start), "stop": ("Stop", stop)}
+# EVENTS = {"session-start": ("SessionStart", session_start), "stop": ("Stop", stop),
+#           "prompt": ("Prompt", prompt)}
 #
 #
 # def main(argv) -> int:
@@ -2491,9 +2622,11 @@ if __name__ == "__main__":
 # chi lo importa cosa fare degli errori.
 # """
 #
+# import json
 # import re
 # import subprocess
 # import tomllib
+# from datetime import datetime
 # from pathlib import Path
 #
 # CONTEXT_DIR = "docs/context"
@@ -2876,6 +3009,177 @@ if __name__ == "__main__":
 #     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
 #             "reduced": reduced, "levels": levels}
 #
+#
+# # ------------------------------------------------------------------------------ listino
+#
+# # $ per milione di token: (input, output, lettura dalla cache). La scrittura in cache
+# # costa 1,25x l'input con durata 5 minuti e 2x con durata 1 ora; la lettura 0,1x l'input,
+# # salvo dove il listino dice altro (Opus 5.5: $0,20; Fable 5.1: $0,25). Fonte: tabella
+# # dei modelli Anthropic aggiornata al 2026-06-24, con Claude Opus 5.5 al lancio.
+# PRICES = {
+#     "claude-opus-5-5": (4.00, 20.00, 0.20),
+#     "claude-opus-5": (5.00, 25.00, 0.50),
+#     "claude-fable-5-1": (10.00, 50.00, 0.25),
+#     "claude-fable-5": (10.00, 50.00, 1.00),
+#     "claude-opus-4-8": (5.00, 25.00, 0.50),
+#     "claude-opus-4-7": (5.00, 25.00, 0.50),
+#     "claude-opus-4-6": (5.00, 25.00, 0.50),
+#     "claude-sonnet-5": (2.00, 10.00, 0.20),
+#     "claude-sonnet-4-6": (3.00, 15.00, 0.30),
+#     "claude-haiku-4-5": (1.00, 5.00, 0.10),
+# }
+# WRITE_5M, WRITE_1H = 1.25, 2.0
+# # I modelli per cui il costo calcolato con questo listino e' stato confrontato con quello
+# # che Claude Code calcola da se' (total_cost_usd di `claude -p`) su una sessione con
+# # scrittura e lettura in cache, e coincideva alla settima cifra decimale: 2026-09-26 Opus
+# # 5.5, 2026-09-28 gli altri tre. Per gli altri si dichiara che il prezzo non e' verificato.
+# VERIFIED_PRICES = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}
+#
+#
+# def price_of(model):
+#     if not model:
+#         return None
+#     if model in PRICES:
+#         return PRICES[model]
+#     # Un id con data in coda (claude-x-20260101) vale come il suo nome base.
+#     return PRICES.get(re.sub(r"-\d{8}$", "", model))
+#
+#
+# # ----------------------------------------------------------------- ripresa dopo una pausa
+#
+# # Sotto questa soglia di contesto riprendere costa poco e l'avviso sarebbe solo rumore.
+# DEFAULT_RESUME_WARN_TOKENS = 100_000
+# # Durata della cache quando la trascrizione non la dice (Codex, o nessuna scrittura
+# # recente in una trascrizione di Claude Code).
+# DEFAULT_CACHE_MINUTES = 60
+# # Quanto della coda di una trascrizione si legge per trovare l'ultima chiamata: le
+# # trascrizioni arrivano a parecchi MB, e l'hook gira a ogni messaggio.
+# TAIL_BYTES = 4 * 1024 * 1024
+#
+#
+# def resume_settings(cfg):
+#     """(soglia di token, durata della cache di ripiego in minuti) da [context]."""
+#     t = config_table(cfg, "context")
+#
+#     def pos_int(key, default):
+#         v = t.get(key)
+#         return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else default
+#     return (pos_int("resume_warn_tokens", DEFAULT_RESUME_WARN_TOKENS),
+#             pos_int("resume_cache_minutes", DEFAULT_CACHE_MINUTES))
+#
+#
+# def _parse_ts(s):
+#     try:
+#         return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+#     except (TypeError, ValueError):
+#         return None
+#
+#
+# def _tail_records(path):
+#     """I record JSON della coda della trascrizione, dal piu' recente."""
+#     p = Path(path)
+#     size = p.stat().st_size
+#     with open(p, "rb") as fh:
+#         if size > TAIL_BYTES:
+#             fh.seek(size - TAIL_BYTES)
+#             fh.readline()                       # la prima riga e' tagliata a meta'
+#         lines = fh.read().decode("utf-8", errors="replace").splitlines()
+#     for line in reversed(lines):
+#         try:
+#             d = json.loads(line)
+#         except ValueError:
+#             continue
+#         if isinstance(d, dict):
+#             yield d
+#
+#
+# def last_call(transcript_path):
+#     """
+#     L'ultima chiamata al modello registrata nella trascrizione, di Claude Code o di
+#     Codex: {"ts", "context", "model", "cache_minutes"}, o None se non ce n'e'.
+#
+#     context e' il contesto di quella chiamata in token, come l'ha registrato l'agente:
+#     per Claude Code input + scritti + letti dalla cache, per Codex input_tokens (che
+#     comprende la parte in cache). cache_minutes e' la durata della cache se la
+#     trascrizione la dice (Claude Code: 60 se l'ultima scrittura era da 1 ora, 5 se da 5
+#     minuti), altrimenti None.
+#     """
+#     found, cache_minutes, model = None, None, None
+#     for d in _tail_records(transcript_path):
+#         t = d.get("type")
+#         if t == "assistant" and not d.get("isSidechain"):          # Claude Code
+#             m = d.get("message") or {}
+#             u = m.get("usage")
+#             if not isinstance(u, dict) or m.get("model") == "<synthetic>":
+#                 continue
+#             if found is None:
+#                 ctx = sum(u.get(k, 0) or 0 for k in (
+#                     "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+#                 found = {"ts": _parse_ts(d.get("timestamp")), "context": ctx,
+#                          "model": m.get("model")}
+#             det = u.get("cache_creation") or {}
+#             if det.get("ephemeral_1h_input_tokens"):
+#                 cache_minutes = 60
+#             elif det.get("ephemeral_5m_input_tokens"):
+#                 cache_minutes = 5
+#             if cache_minutes:
+#                 break
+#         elif t == "event_msg":                                        # Codex
+#             p = d.get("payload") or {}
+#             last = (p.get("info") or {}).get("last_token_usage") if \
+#                 p.get("type") == "token_count" else None
+#             if last and found is None:
+#                 found = {"ts": _parse_ts(d.get("timestamp")),
+#                          "context": last.get("input_tokens", 0) or 0, "model": None}
+#         elif t == "turn_context" and found is not None and model is None:
+#             model = (d.get("payload") or {}).get("model")
+#             break
+#     if found is None or found["ts"] is None:
+#         return None
+#     if found["model"] is None:
+#         found["model"] = model
+#     found["cache_minutes"] = cache_minutes
+#     return found
+#
+#
+# def resume_warning(transcript_path, now, cfg):
+#     """
+#     Il testo dell'avviso da dare prima di riprendere una sessione dopo una pausa, o None
+#     se non serve: pausa piu' corta della cache, o contesto sotto la soglia. Il costo e'
+#     una stima: il contesto e' quello registrato, il prezzo e' il listino.
+#     """
+#     call = last_call(transcript_path)
+#     if call is None:
+#         return None, None
+#     min_tokens, fallback_min = resume_settings(cfg)
+#     minutes = call["cache_minutes"] or fallback_min
+#     gap = (now - call["ts"]).total_seconds() / 60
+#     if gap <= minutes or call["context"] < min_tokens:
+#         return None, call
+#     h, m = divmod(int(gap), 60)
+#     pausa = f"{h} h {m} min" if h else f"{m} min"
+#     ctx = f"{call['context']:,}".replace(",", ".")
+#     lines = [f"Pausa di {pausa} dall'ultima chiamata al modello: la cache del contesto "
+#              f"(durata {minutes} min) e' scaduta. Il contesto di questa sessione e' di "
+#              f"{ctx} token."]
+#     p = price_of(call["model"])
+#     if p:
+#         write = call["context"] * p[0] * WRITE_1H / 1e6
+#         read = call["context"] * p[2] / 1e6
+#         lines.append(f"Riprendere adesso costa circa ${write:.2f} solo per riscriverlo in "
+#                      f"cache, poi circa ${read:.2f} a ogni chiamata per rileggerlo (stima, "
+#                      f"listino {call['model']}).")
+#     else:
+#         lines.append("Riprendere adesso lo fa rielaborare tutto da capo, e ogni chiamata "
+#                      "successiva lo rilegge per intero.")
+#     lines += ["",
+#               "- Se ti serve tutto quel contesto: reinvia lo stesso messaggio, non ti "
+#               "fermo una seconda volta.",
+#               "- Altrimenti: /clear (non chiama il modello; azzera il contesto e l'hook "
+#               "reinietta lo stato) oppure una sessione nuova, e riparti dal punto di "
+#               f"ripresa in {STATUS_FILE}."]
+#     return "\n".join(lines), call
+#
 # ---- AGENT-CONTEXT-FILE: scripts/context_cost.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
@@ -2946,28 +3250,11 @@ if __name__ == "__main__":
 #
 # # ------------------------------------------------------------------------- listino
 #
-# # $ per milione di token: (input, output, lettura dalla cache). La scrittura in cache
-# # costa 1,25x l'input con durata 5 minuti e 2x con durata 1 ora; la lettura 0,1x l'input,
-# # salvo dove il listino dice altro (Opus 5.5: $0,20; Fable 5.1: $0,25). Fonte: tabella
-# # dei modelli Anthropic aggiornata al 2026-06-24, con Claude Opus 5.5 al lancio.
-# PRICES = {
-#     "claude-opus-5-5": (4.00, 20.00, 0.20),
-#     "claude-opus-5": (5.00, 25.00, 0.50),
-#     "claude-fable-5-1": (10.00, 50.00, 0.25),
-#     "claude-fable-5": (10.00, 50.00, 1.00),
-#     "claude-opus-4-8": (5.00, 25.00, 0.50),
-#     "claude-opus-4-7": (5.00, 25.00, 0.50),
-#     "claude-opus-4-6": (5.00, 25.00, 0.50),
-#     "claude-sonnet-5": (2.00, 10.00, 0.20),
-#     "claude-sonnet-4-6": (3.00, 15.00, 0.30),
-#     "claude-haiku-4-5": (1.00, 5.00, 0.10),
-# }
-# WRITE_5M, WRITE_1H = 1.25, 2.0
-# # I modelli per cui il costo calcolato qui e' stato confrontato con quello che Claude Code
-# # calcola da se' (total_cost_usd di `claude -p`) su una sessione con scrittura e lettura
-# # in cache, e coincideva alla settima cifra decimale: 2026-09-26 Opus 5.5, 2026-09-28 gli
-# # altri tre. Per gli altri il resoconto dice che il prezzo non e' verificato.
-# VERIFIED_PRICES = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}
+# # Il listino sta in context_core, perche' anche l'avviso di ripresa lo usa: i due devono
+# # dare gli stessi numeri.
+# PRICES, VERIFIED_PRICES = core.PRICES, core.VERIFIED_PRICES
+# WRITE_5M, WRITE_1H = core.WRITE_5M, core.WRITE_1H
+# price_of = core.price_of
 #
 # # Rapporto caratteri/token usato solo finche' non c'e' una `misura` di questo repository.
 # # Valore di partenza: nelle sessioni di tre repository di questo impianto (documenti in
@@ -2994,16 +3281,6 @@ if __name__ == "__main__":
 #         return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
 #     except (TypeError, ValueError):
 #         return None
-#
-#
-# def price_of(model):
-#     if not model:
-#         return None
-#     if model in PRICES:
-#         return PRICES[model]
-#     # Un id con data in coda (claude-x-20260101) vale come il suo nome base.
-#     base = re.sub(r"-\d{8}$", "", model)
-#     return PRICES.get(base)
 #
 #
 # def usd(x):

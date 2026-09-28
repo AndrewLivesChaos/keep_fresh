@@ -32,7 +32,7 @@ docs/                documentazione dell'applicazione, per le persone
 docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
 
 scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
-scripts/agent_hooks.py       hook di avvio e di fine turno, uguali per ogni agente
+scripts/agent_hooks.py       hook di avvio, di fine turno e di ripresa, uguali per ogni agente
 scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
 scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
 
@@ -448,6 +448,19 @@ viene frainteso più spesso, ed è anche il motivo per cui funziona. Se il codic
 e il documento di stato è intatto, chiede di non chiudere e il turno continua finché non è
 stato gestito. Non esiste nessun «momento finale» da intercettare, quindi chiudere il terminale
 non salta nessun controllo: è già avvenuto a ogni turno precedente.
+
+**`UserPromptSubmit`** — prima che un messaggio dell'utente parta. Se la sessione riprende
+dopo una pausa più lunga della cache del contesto (1 ora per Claude Code, letta dalla
+trascrizione) e il contesto supera la soglia di `config.toml` (100 mila token di partenza),
+ferma il messaggio **una volta** e dice quanto costa riprendere: riscrivere tutto il
+contesto in cache, poi rileggerlo a ogni chiamata. Il messaggio fermato non arriva al
+modello; reinviato, passa. Non ferma mai un comando `/`: il rimedio è proprio `/clear`,
+che non chiama il modello, azzera il contesto e fa ripartire `SessionStart`. Serve perché
+le pause sono il costo che non si vede: su un repository di questo impianto, 21 riprese
+dopo più di un'ora hanno riscritto 7 milioni di token, circa $72 [stimato da token
+misurati, trascrizioni di settembre 2026]. Il formato che ferma è
+`{"decision": "block", "reason": ...}`, provato su Claude Code 2.1.283 il 2026-09-28; su
+Codex è quello della documentazione, non provato.
 
 **Non usare un hook di fine sessione.** Non può bloccare, il suo output viene ignorato, e
 non scatta se il processo viene ucciso. `SessionStart` + `Stop` chiudono le due estremità e
