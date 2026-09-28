@@ -62,10 +62,10 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-28T11:56:57',
+    'packed_at': '2026-09-28T11:57:12',
     'source': 'context_script',
-    'commit': '3400e3c',
-    'payload_dirty': True,
+    'commit': 'c0c7cf4',
+    'payload_dirty': False,
     'payload_sha': '460b6ed74b93',
 }
 # ==== TIMBRO (fine) ====
