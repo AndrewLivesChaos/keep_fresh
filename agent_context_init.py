@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-28T10:22:50',
+    'packed_at': '2026-09-28T11:04:57',
     'source': 'context_script',
-    'commit': '9538795',
-    'payload_dirty': False,
-    'payload_sha': 'df23ecac3846',
+    'commit': '69f6228',
+    'payload_dirty': True,
+    'payload_sha': '881dcfabe340',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -2899,19 +2899,21 @@ if __name__ == "__main__":
 #               `misura` di questo repository, se c'e'; altrimenti e' un valore di
 #               partenza, dichiarato.
 #
-# COME MISURA `misura`. Lancia Claude Code headless tre volte in una copia usa e getta:
-# repository vuoto, poi con AGENTS.md e CLAUDE.md, poi anche con l'hook di avvio che
+# COME MISURA `misura`. Lancia Claude Code headless in una copia usa e getta, in tre
+# strati: repository vuoto, poi con AGENTS.md e CLAUDE.md, poi anche con l'hook di avvio che
 # inietta il testo che inietterebbe qui. Il totale dei token di input di ogni esecuzione
-# lo riporta Claude Code; la differenza fra due esecuzioni e' il peso esatto dello strato
+# lo riporta Claude Code; la differenza fra due strati e' il peso esatto di cio' che si e'
 # aggiunto, con il tokenizer e l'harness veri. Tutto il resto (prompt di sistema, strumenti,
-# istruzioni e plugin dell'utente) e' uguale nelle tre e si elide: la base viene misurata
-# due volte e, se non torna identica, la misura si ferma invece di dare un numero sporco.
+# istruzioni e plugin dell'utente) e' uguale nei tre strati e si elide; i server MCP
+# dell'utente restano fuori (--strict-mcp-config), perche' entrano nel contesto a caso.
+# Ogni strato e' misurato due volte: se le due misure non coincidono la misura si ferma e
+# non salva niente, invece di dare un numero sporco.
 # Precisione: pochi token. Due misure dello stesso repository, il 2026-09-28, hanno dato
 # 1.302 e 1.300 token per le stesse istruzioni: il percorso della copia usa e getta, che
 # cambia a ogni misura, compare nell'intestazione che l'agente mette ai file. La misura
 # comprende quelle intestazioni, perche' anche loro sono contesto pagato.
-# Costa quattro chiamate brevi al modello (circa $0,40 con Opus 5.5, quasi tutto la prima
-# scrittura in cache della base), e il costo esatto lo stampa alla fine.
+# Costa sei chiamate brevi al modello (circa $0,40 con Opus 5.5, quasi tutto le scritture
+# in cache; le ripetizioni leggono dalla cache), e il costo esatto lo stampa alla fine.
 # Il risultato va in .git/context-cost.json, legato al contenuto misurato: se i file
 # cambiano, il resoconto lo dice e torna a stimare.
 #
@@ -3490,9 +3492,16 @@ if __name__ == "__main__":
 # # --------------------------------------------------------------------------- misura
 #
 # def run_claude(cwd: Path):
+#     """
+#     Una chiamata di Claude Code headless: (token di contesto, costo, modello).
+#     --strict-mcp-config tiene fuori i server MCP dell'utente. Senza, gli strumenti e le
+#     istruzioni dei connettori entrano nel contesto solo in alcune esecuzioni (una corsa di
+#     caricamento, circa 3.000 token): osservato il 2026-09-28, due misure su tre fallite
+#     per questo. Non sono di questo impianto, quindi escluderli non cambia le differenze.
+#     """
 #     exe = shutil.which("claude") or "claude"
 #     r = subprocess.run([exe, "-p", PROMPT, "--max-turns", "1", "--output-format",
-#                         "json"], cwd=str(cwd), capture_output=True, text=True,
+#                         "json", "--strict-mcp-config"], cwd=str(cwd), capture_output=True, text=True,
 #                        encoding="utf-8", errors="replace", timeout=300)
 #     try:
 #         d = json.loads(r.stdout)
@@ -3517,23 +3526,35 @@ if __name__ == "__main__":
 #     except (OSError, subprocess.SubprocessError):
 #         ver = "?"
 #     print(f"Misura esatta per {root}")
-#     print(f"Claude Code {ver}. Quattro chiamate brevi al modello, in una copia usa e getta.")
+#     print(f"Claude Code {ver}. Sei chiamate brevi al modello, in una copia usa e getta.")
 #     tmp = Path(tempfile.mkdtemp(prefix="context-cost-"))
 #     spent = 0.0
+#     model = None
+#
+#     def twice(label):
+#         """
+#         Lo stesso strato misurato due volte: le due misure devono coincidere. Se non
+#         coincidono, qualcosa di estraneo ai file e' entrato nel contesto, e la differenza
+#         con lo strato prima non misurerebbe solo i file.
+#         """
+#         nonlocal spent, model
+#         a, c1, model = run_claude(tmp)
+#         b, c2, _ = run_claude(tmp)
+#         spent += c1 + c2
+#         print(f"  {label}: {num(a)} e {num(b)} token")
+#         if a != b:
+#             raise RuntimeError(f"{label}: due esecuzioni identiche danno contesti diversi. "
+#                                f"Niente salvato; rilancia la misura")
+#         return a
+#
 #     try:
 #         subprocess.run(["git", "init", "-q", "."], cwd=str(tmp), check=True)
-#         base1, c, model = run_claude(tmp); spent += c
-#         base2, c, _ = run_claude(tmp); spent += c
-#         print(f"  base dell'harness: {num(base1)} e {num(base2)} token")
-#         if base1 != base2:
-#             print("  La base non e' stabile fra due esecuzioni identiche: una differenza "
-#                   "non misurerebbe solo i file. Misura interrotta, niente salvato.")
-#             return 1
+#         base1 = twice("base dell'harness")
 #         for rel in fixed["instruction_files"]:
 #             dst = tmp / rel
 #             dst.parent.mkdir(parents=True, exist_ok=True)
 #             shutil.copyfile(root / rel, dst)
-#         with_instr, c, _ = run_claude(tmp); spent += c
+#         with_instr = twice("con le istruzioni")
 #         # L'hook stampa il testo che l'hook vero inietterebbe OGGI in questo repository.
 #         (tmp / "injection.txt").write_text(fixed["injection_text"], encoding="utf-8")
 #         (tmp / "print_injection.py").write_text(
@@ -3548,7 +3569,7 @@ if __name__ == "__main__":
 #         (tmp / ".claude").mkdir(exist_ok=True)
 #         (tmp / ".claude" / "settings.local.json").write_text(json.dumps(settings),
 #                                                              encoding="utf-8")
-#         with_inj, c, _ = run_claude(tmp); spent += c
+#         with_inj = twice("con l'iniezione")
 #     except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
 #         print(f"  Misura fallita: {exc}")
 #         return 1

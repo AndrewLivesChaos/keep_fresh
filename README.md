@@ -117,8 +117,11 @@ Ogni numero è marcato **[misurato]**, cioè registrato dall'agente o dalla misu
   (Windows 11, Claude Code 2.1.283, 2026-09-26/28). Per gli altri modelli del listino il
   resoconto dice che il prezzo non è verificato. Per Codex dà i token, non i costi;
 - **`misura`:** lancia Claude Code headless in una copia usa e getta, vuota, con
-  `AGENTS.md`/`CLAUDE.md` e con l'iniezione, e sottrae i totali. La base misurata due
-  volte deve tornare identica, o la misura si ferma. Due misure della stessa copia hanno
+  `AGENTS.md`/`CLAUDE.md` e con l'iniezione, e sottrae i totali. Ogni strato è misurato
+  due volte e le due misure devono coincidere, o la misura si ferma senza salvare. I
+  server MCP dell'utente restano fuori: il 2026-09-28 entravano nel contesto solo in
+  alcune esecuzioni, circa 3.000 token, e hanno fatto fallire due misure su tre prima
+  della correzione. Due misure della stessa copia hanno
   dato 1.302 e 1.300 token per le istruzioni e 2.142 per l'iniezione in entrambe: la
   precisione è di pochi token. Il risultato va in `.git/context-cost.json`, legato al
   contenuto: se i file cambiano, il resoconto torna a stimare e lo dice;
