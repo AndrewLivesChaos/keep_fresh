@@ -8,7 +8,7 @@
 # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
 # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
 # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
-#     python scripts/docs_lint.py
+#     <python> scripts/docs_lint.py   (python3 su macOS/Linux)
 # Qui si correggono solo gli errori di quella rilevazione.
 
 [code]
@@ -23,7 +23,7 @@ exclude = []
 # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
 # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
 # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
-# pesa davvero in token lo misura: python scripts/context_cost.py
+# pesa davvero in token lo misura: <python> scripts/context_cost.py
 max_injection_chars = 8000
 # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
 # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA

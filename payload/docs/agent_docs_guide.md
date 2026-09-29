@@ -53,9 +53,13 @@ solo file Python senza dipendenze e porta il payload dentro di sé. Lo si copia 
 lo si lancia; funziona anche in un repo appena creato con `git init`, senza codice.
 
 ```
-python agent_context_init.py --dry-run   # dice cosa farebbe
-python agent_context_init.py             # scrive lint, hook, aggancio, scheletri
+<python> agent_context_init.py --dry-run   # dice cosa farebbe
+<python> agent_context_init.py             # scrive lint, hook, aggancio, scheletri
 ```
+
+**`<python>` in questa guida** vuol dire l'interprete della macchina in cui sei: `python` su
+Windows, `python3` su macOS e Linux (lì `python` di solito non esiste). Sostituiscilo tu
+quando lanci un comando; non riscrivere la guida per farlo.
 
 Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
 guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
@@ -484,8 +488,8 @@ Due proprietà non negoziabili:
 ### 3. La misura dei consumi — quanto pesa davvero il contesto
 
 ```
-python scripts/context_cost.py            resoconto: niente chiamate al modello
-python scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+<python> scripts/context_cost.py            resoconto: niente chiamate al modello
+<python> scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
 ```
 
 Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i

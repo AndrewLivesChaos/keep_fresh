@@ -3,9 +3,9 @@
 """
 agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
 
-    python scripts/agent_hooks.py session-start --agent <nome>
-    python scripts/agent_hooks.py stop          --agent <nome>
-    python scripts/agent_hooks.py prompt        --agent <nome>
+    <python> scripts/agent_hooks.py session-start --agent <nome>
+    <python> scripts/agent_hooks.py stop          --agent <nome>
+    <python> scripts/agent_hooks.py prompt        --agent <nome>
 
 Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella

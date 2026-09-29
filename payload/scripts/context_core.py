@@ -21,9 +21,14 @@ chi lo importa cosa fare degli errori.
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from datetime import datetime
 from pathlib import Path
+
+# L'interprete si chiama diversamente da una macchina all'altra: i messaggi che stampiamo
+# devono dire un comando che qui funziona.
+PY = "python" if sys.platform == "win32" else "python3"
 
 CONTEXT_DIR = "docs/context"
 STATUS_FILE = "docs/context/status.md"
@@ -400,7 +405,7 @@ def build_injection(root, cfg=None):
                    f"precedente mai registrato: valuta se va annotato.")
 
     out += ["", "Verifica che i documenti dicano ancora il vero: "
-                "python scripts/docs_lint.py",
+                f"{PY} scripts/docs_lint.py",
             "=== fine stato del progetto ==="]
     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
             "reduced": reduced, "levels": levels}

@@ -26,7 +26,7 @@ Sei controlli:
 Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
 esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
 
-Uso:   python scripts/docs_lint.py [--quiet]
+Uso:   <python> scripts/docs_lint.py [--quiet]
 Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 """
 
@@ -490,7 +490,7 @@ def check_weight(rep: Report):
         if p.is_file():
             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
                      f"(piu' cio' che importa)")
-    rep.note("  i token veri: python scripts/context_cost.py")
+    rep.note(f"  i token veri: {core.PY} scripts/context_cost.py")
 
 
 CHECKS = [

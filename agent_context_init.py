@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-28T11:57:12',
+    'packed_at': '2026-09-29T12:24:00',
     'source': 'context_script',
-    'commit': 'c0c7cf4',
-    'payload_dirty': False,
-    'payload_sha': '460b6ed74b93',
+    'commit': 'e0511b4',
+    'payload_dirty': True,
+    'payload_sha': '870de83bb99c',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -91,7 +91,7 @@ STATUS_SKELETON = """# Stato del lavoro
 
 > Il marcatore `context-verified-at` qui sopra e' il commit fino al quale questo
 > documento e' stato **riconciliato con il codice**. Chi lo riconcilia lo riporta a
-> `HEAD`. `python scripts/docs_lint.py` dice quanti commit hanno toccato il codice da
+> `HEAD`. `python scripts/docs_lint.py` (`python3` su macOS/Linux) dice quanti commit hanno toccato il codice da
 > allora: e' l'unica misura oggettiva di quanto questo file sia invecchiato.
 >
 > I blocchi delimitati dai marcatori `session-start` sono le sezioni che l'hook di avvio
@@ -164,7 +164,7 @@ codice lo rilevano da soli a ogni esecuzione. La taratura a mano sta in
 docs/context/config.toml: le liste di eccezioni del lint partono vuote di proposito, e si
 riempiono guardando i falsi positivi del primo giro, con il motivo scritto per ogni voce.
 
-Fai girare `python scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
+Fai girare `<python> scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
 concluso. Al primo giro sara' rumoroso: correggi prima i CONTROLLI, poi i documenti. Una
 segnalazione che descrive un difetto vero — un riferimento a una rinomina mai fatta, un
 simbolo sparito — non va messa a tacere: va registrata come lavoro aperto."""
@@ -1567,10 +1567,10 @@ chiesto nel prompt qui sotto.
 1. Apri una sessione dell'agente e incollagli questo prompt:
 """)
     print("-" * 74)
-    print(PROMPT)
+    print(PROMPT.replace("<python>", interp))
     if precedente:
         print()
-        print(PROMPT_UPGRADE)
+        print(PROMPT_UPGRADE.replace("<python>", interp))
     if problemi:
         print()
         print("Inoltre l'inizializzatore ha lasciato aperti questi punti, sistemali:")
@@ -1583,7 +1583,7 @@ chiesto nel prompt qui sotto.
         print(f"     {agent['label']}: {agent['steps']}.")
     print("""
 3. Quando l'agente ha finito, verifica tu:
-     python scripts/docs_lint.py          deve uscire senza errori
+     <python> scripts/docs_lint.py        deve uscire senza errori
      git log --oneline -5                 cosa ha committato
    e che gli hook girino davvero: apri una sessione nuova e guarda
      .git/agent-hooks.log                 una riga per ogni esecuzione, con l'agente
@@ -1591,7 +1591,7 @@ chiesto nel prompt qui sotto.
    dell'agente, non nel tuo terminale.
    Su ogni ALTRA macchina dove clonerai questo repo, rilancia questo script una
    volta: gli agganci degli hook sono locali e non vengono clonati.
-""")
+""".replace("<python>", interp))
     return 0
 
 
@@ -1656,9 +1656,13 @@ if __name__ == "__main__":
 # lo si lancia; funziona anche in un repo appena creato con `git init`, senza codice.
 #
 # ```
-# python agent_context_init.py --dry-run   # dice cosa farebbe
-# python agent_context_init.py             # scrive lint, hook, aggancio, scheletri
+# <python> agent_context_init.py --dry-run   # dice cosa farebbe
+# <python> agent_context_init.py             # scrive lint, hook, aggancio, scheletri
 # ```
+#
+# **`<python>` in questa guida** vuol dire l'interprete della macchina in cui sei: `python` su
+# Windows, `python3` su macOS e Linux (lì `python` di solito non esiste). Sostituiscilo tu
+# quando lanci un comando; non riscrivere la guida per farlo.
 #
 # Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
 # guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
@@ -2087,8 +2091,8 @@ if __name__ == "__main__":
 # ### 3. La misura dei consumi — quanto pesa davvero il contesto
 #
 # ```
-# python scripts/context_cost.py            resoconto: niente chiamate al modello
-# python scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+# <python> scripts/context_cost.py            resoconto: niente chiamate al modello
+# <python> scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
 # ```
 #
 # Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i
@@ -2268,7 +2272,7 @@ if __name__ == "__main__":
 # # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
 # # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
 # # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
-# #     python scripts/docs_lint.py
+# #     <python> scripts/docs_lint.py   (python3 su macOS/Linux)
 # # Qui si correggono solo gli errori di quella rilevazione.
 #
 # [code]
@@ -2283,7 +2287,7 @@ if __name__ == "__main__":
 # # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
 # # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
 # # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
-# # pesa davvero in token lo misura: python scripts/context_cost.py
+# # pesa davvero in token lo misura: <python> scripts/context_cost.py
 # max_injection_chars = 8000
 # # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
 # # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
@@ -2323,9 +2327,9 @@ if __name__ == "__main__":
 # """
 # agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
 #
-#     python scripts/agent_hooks.py session-start --agent <nome>
-#     python scripts/agent_hooks.py stop          --agent <nome>
-#     python scripts/agent_hooks.py prompt        --agent <nome>
+#     <python> scripts/agent_hooks.py session-start --agent <nome>
+#     <python> scripts/agent_hooks.py stop          --agent <nome>
+#     <python> scripts/agent_hooks.py prompt        --agent <nome>
 #
 # Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 # parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -2625,9 +2629,14 @@ if __name__ == "__main__":
 # import json
 # import re
 # import subprocess
+# import sys
 # import tomllib
 # from datetime import datetime
 # from pathlib import Path
+#
+# # L'interprete si chiama diversamente da una macchina all'altra: i messaggi che stampiamo
+# # devono dire un comando che qui funziona.
+# PY = "python" if sys.platform == "win32" else "python3"
 #
 # CONTEXT_DIR = "docs/context"
 # STATUS_FILE = "docs/context/status.md"
@@ -3004,7 +3013,7 @@ if __name__ == "__main__":
 #                    f"precedente mai registrato: valuta se va annotato.")
 #
 #     out += ["", "Verifica che i documenti dicano ancora il vero: "
-#                 "python scripts/docs_lint.py",
+#                 f"{PY} scripts/docs_lint.py",
 #             "=== fine stato del progetto ==="]
 #     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
 #             "reduced": reduced, "levels": levels}
@@ -3186,11 +3195,11 @@ if __name__ == "__main__":
 # """
 # context_cost — quanto pesa il contesto di questo repository, misurato.
 #
-#     python scripts/context_cost.py                resoconto; non chiama nessun modello
-#     python scripts/context_cost.py misura         misura ESATTA dei token che questo
+#     <python> scripts/context_cost.py                resoconto; non chiama nessun modello
+#     <python> scripts/context_cost.py misura         misura ESATTA dei token che questo
 #                                                   impianto aggiunge a ogni sessione
-#     python scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
-#     python scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
+#     <python> scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
+#     <python> scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
 #                                                   (il vecchio percorso di un repo spostato)
 #
 # Ogni numero dice da dove viene:
@@ -3680,10 +3689,10 @@ if __name__ == "__main__":
 #     elif measure:
 #         print(f"  L'ultima misura ({measure['date']}) e' di contenuti diversi da quelli di "
 #               f"oggi: token stimati con il suo rapporto, {cpt:.2f} caratteri/token.")
-#         print("  Per il valore esatto: python scripts/context_cost.py misura")
+#         print(f"  Per il valore esatto: {core.PY} scripts/context_cost.py misura")
 #     else:
 #         print(f"  Token stimati a {cpt:.2f} caratteri/token ({cpt_src}).")
-#         print("  Per il valore esatto: python scripts/context_cost.py misura")
+#         print(f"  Per il valore esatto: {core.PY} scripts/context_cost.py misura")
 #
 #     # 2. Sessioni Claude Code
 #     print("\n2. SESSIONI DI CLAUDE CODE (trascrizioni in "
@@ -3931,7 +3940,7 @@ if __name__ == "__main__":
 # Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
 # esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
 #
-# Uso:   python scripts/docs_lint.py [--quiet]
+# Uso:   <python> scripts/docs_lint.py [--quiet]
 # Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 # """
 #
@@ -4395,7 +4404,7 @@ if __name__ == "__main__":
 #         if p.is_file():
 #             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
 #                      f"(piu' cio' che importa)")
-#     rep.note("  i token veri: python scripts/context_cost.py")
+#     rep.note(f"  i token veri: {core.PY} scripts/context_cost.py")
 #
 #
 # CHECKS = [
