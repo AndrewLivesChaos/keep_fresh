@@ -77,6 +77,28 @@ come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due 
 prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
 volta su quella macchina: va detto all'utente.
 
+**Cosa va nel repository, e cosa no.** Alla fine i file dell'impianto devono essere
+**versionati**, perché sono il contesto e viaggiano coi cloni. Senza i primi, gli hook
+locali di un clone non trovano niente da eseguire; senza i secondi, chi clona non ha il
+contesto:
+
+- gli strumenti: `scripts/docs_lint.py`, `scripts/context_core.py`, `scripts/agent_hooks.py`,
+  `scripts/context_cost.py`, `scripts/agent_context_version.json`, questa guida e `.gitignore`;
+- il contesto: `docs/context/status.md`, `docs/context/config.toml`, `AGENTS.md`, `CLAUDE.md`
+  e i documenti in `docs/`.
+
+Restano **fuori** da git i due file di aggancio, `.claude/settings.local.json` e
+`.codex/hooks.json`: contengono il nome dell'interprete della macchina, e `.gitignore` li
+esclude già. Se il repository verrà clonato su altre macchine, chiedi all'utente se vuole
+versionare anche una copia di `agent_context_init.py`, in `scripts/` e non nella radice:
+serve a rilanciarlo dopo ogni clone. La copia va tenuta uguale alla fonte e sostituita a
+ogni aggiornamento.
+
+Quanto a commit e push, vale la regola dichiarata dall'utente. Se ti permette di
+committare, fai commit separati per gli strumenti e per il contesto, dopo che il lint è
+uscito pulito. Non fare push e non committare i due file di aggancio, salvo che l'utente
+lo dica.
+
 **Codex salta gli hook del repository senza avvisare** finché il progetto non è segnato
 come fidato e gli hook non sono stati approvati dall'utente con `/hooks` dentro Codex; va
 rifatto quando `.codex/hooks.json` cambia. L'agente non può farlo al posto dell'utente:
@@ -625,6 +647,8 @@ E poi: **fai girare il lint completo e mostra l'output vero**, non un riassunto.
       non come «guardare se compare qualcosa a schermo».
 - [ ] Nessun path vecchio è rimasto nel repo, `.md` o no.
 - [ ] La regola su commit e push che l'utente ha dichiarato è stata rispettata.
+- [ ] `git status` non mostra file dell'impianto rimasti untracked, e i due file di aggancio
+      locali non sono stati committati.
 
 ## Cosa dire alla fine
 

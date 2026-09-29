@@ -62,11 +62,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-29T12:24:10',
+    'packed_at': '2026-09-29T12:40:04',
     'source': 'context_script',
-    'commit': '5e5fafb',
-    'payload_dirty': False,
-    'payload_sha': '870de83bb99c',
+    'commit': '2465af3',
+    'payload_dirty': True,
+    'payload_sha': '7b198ffafa48',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -167,7 +167,11 @@ riempiono guardando i falsi positivi del primo giro, con il motivo scritto per o
 Fai girare `<python> scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
 concluso. Al primo giro sara' rumoroso: correggi prima i CONTROLLI, poi i documenti. Una
 segnalazione che descrive un difetto vero — un riferimento a una rinomina mai fatta, un
-simbolo sparito — non va messa a tacere: va registrata come lavoro aperto."""
+simbolo sparito — non va messa a tacere: va registrata come lavoro aperto.
+
+A lavoro finito i file dell'impianto (scripts/, docs/, AGENTS.md, CLAUDE.md, .gitignore)
+devono essere versionati, non lasciati untracked: la guida dice quali sono e cosa NON
+committare. Segui la regola su commit e push che ti ho dato, e non fare push."""
 
 # Aggiunta al prompt quando il repository aveva un contesto della versione precedente.
 # Senza, l'agente legge "partono vuote" e "esegui la guida" come un lavoro da rifare da
@@ -1680,6 +1684,28 @@ if __name__ == "__main__":
 # prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
 # volta su quella macchina: va detto all'utente.
 #
+# **Cosa va nel repository, e cosa no.** Alla fine i file dell'impianto devono essere
+# **versionati**, perché sono il contesto e viaggiano coi cloni. Senza i primi, gli hook
+# locali di un clone non trovano niente da eseguire; senza i secondi, chi clona non ha il
+# contesto:
+#
+# - gli strumenti: `scripts/docs_lint.py`, `scripts/context_core.py`, `scripts/agent_hooks.py`,
+#   `scripts/context_cost.py`, `scripts/agent_context_version.json`, questa guida e `.gitignore`;
+# - il contesto: `docs/context/status.md`, `docs/context/config.toml`, `AGENTS.md`, `CLAUDE.md`
+#   e i documenti in `docs/`.
+#
+# Restano **fuori** da git i due file di aggancio, `.claude/settings.local.json` e
+# `.codex/hooks.json`: contengono il nome dell'interprete della macchina, e `.gitignore` li
+# esclude già. Se il repository verrà clonato su altre macchine, chiedi all'utente se vuole
+# versionare anche una copia di `agent_context_init.py`, in `scripts/` e non nella radice:
+# serve a rilanciarlo dopo ogni clone. La copia va tenuta uguale alla fonte e sostituita a
+# ogni aggiornamento.
+#
+# Quanto a commit e push, vale la regola dichiarata dall'utente. Se ti permette di
+# committare, fai commit separati per gli strumenti e per il contesto, dopo che il lint è
+# uscito pulito. Non fare push e non committare i due file di aggancio, salvo che l'utente
+# lo dica.
+#
 # **Codex salta gli hook del repository senza avvisare** finché il progetto non è segnato
 # come fidato e gli hook non sono stati approvati dall'utente con `/hooks` dentro Codex; va
 # rifatto quando `.codex/hooks.json` cambia. L'agente non può farlo al posto dell'utente:
@@ -2228,6 +2254,8 @@ if __name__ == "__main__":
 #       non come «guardare se compare qualcosa a schermo».
 # - [ ] Nessun path vecchio è rimasto nel repo, `.md` o no.
 # - [ ] La regola su commit e push che l'utente ha dichiarato è stata rispettata.
+# - [ ] `git status` non mostra file dell'impianto rimasti untracked, e i due file di aggancio
+#       locali non sono stati committati.
 #
 # ## Cosa dire alla fine
 #
