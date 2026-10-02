@@ -1,4 +1,6 @@
-# agent_context_init
+# keep-fresh
+
+Skill per agenti di programmazione, il cui motore è lo script `agent_context_init.py`.
 
 Prepara un repository git perché gli agenti di programmazione ci lavorino con un contesto
 che non marcisce: documenti di contesto, un lint che controlla che dicano ancora il vero,
@@ -14,6 +16,28 @@ script installa.
 > iniettato lo stato e quello di fine turno ha bloccato dopo una modifica al codice. Non
 > provato: macOS, Linux, le sessioni interattive. I comandi per shell POSIX qui sotto sono
 > dedotti, non eseguiti.
+
+## Come skill di Claude Code
+
+La radice di questo repository **è** la cartella della skill: `SKILL.md` sta accanto a
+`agent_context_init.py`. Perché Claude Code la veda, la cartella deve comparire in
+`~/.claude/skills/` con il nome `keep-fresh`. Un collegamento basta, e le modifiche al
+repository valgono subito (la documentazione di Claude Code dice che segue le cartelle di
+skill collegate con link simbolici).
+
+```powershell
+# Windows, PowerShell: giunzione, non richiede privilegi (non ancora provato)
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\keep-fresh" -Target "C:\projects\keep_fresh"
+```
+
+```sh
+# macOS / Linux (non provato)
+ln -s ~/projects/keep_fresh ~/.claude/skills/keep-fresh
+```
+
+Poi `/keep-fresh` dentro il progetto da preparare, oppure basta chiederlo ("prepara il
+contesto per gli agenti"). La skill lancia lo script sul repository della cartella
+corrente, prima a vuoto, e chiede conferma prima di scrivere. La procedura è in `SKILL.md`.
 
 ## Uso in breve
 

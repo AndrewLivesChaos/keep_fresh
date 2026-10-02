@@ -1,0 +1,42 @@
+---
+name: keep-fresh
+description: Use when a git repository needs agent context set up, updated or repaired - no docs/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
+---
+
+# keep-fresh
+
+Prepara un repository git perché gli agenti ci lavorino con un contesto che non marcisce:
+un lint dei documenti, hook che iniettano lo stato del lavoro e bloccano il turno se il
+codice è cambiato e lo stato no. Lo script fa la meccanica; **i documenti li scrivi tu**,
+seguendo la guida che lo script installa.
+
+## Prima di cominciare
+
+- Serve un repository git (`git rev-parse --show-toplevel`). Se non lo è, chiedi se fare `git init`.
+- Serve Python 3.14 o successivo: `python` su Windows, `python3` su macOS/Linux.
+  Il minimo tecnico è 3.11; il Python di sistema di macOS (3.9) non basta.
+- Lo script lavora sul repository **della cartella corrente**, non su quello della skill.
+  Resta nella radice del progetto di destinazione.
+
+## Procedura
+
+1. **Prova a vuoto.** Non scrive nulla:
+   `python "${CLAUDE_SKILL_DIR}/agent_context_init.py" --dry-run`
+2. **Mostra all'utente** cosa farebbe e aspetta il suo via libera.
+3. **Esegui davvero**, stesso comando senza `--dry-run`. Se il repository è già stato
+   inizializzato e vuoi aggiornare lint, hook e guida, aggiungi `--force`
+   (non tocca `status.md` né `config.toml`; poi guarda il `git diff`).
+4. **Segui il prompt** che lo script stampa alla fine: dice come scrivere `AGENTS.md`,
+   `CLAUDE.md` e `docs/context/status.md` leggendo il repo e chiedendo all'utente ciò che
+   nel repo non c'è. La guida è anche in `docs/agent_docs_guide.md` del progetto.
+5. **Leggi la diagnosi** stampata dallo script: elenca ciò che ancora non funziona.
+
+Non committare e non fare push senza che l'utente lo chieda.
+
+## Da sapere
+
+- Gli hook vanno agganciati **su ogni macchina** dopo un clone: lo script va rilanciato una volta.
+- **Codex** salta gli hook del repository, senza avvisare, finché il progetto non è fidato
+  e gli hook non sono approvati con `/hooks`.
+- Comandi utili: `--version` (che copia è), `--self-test`, `--force`, `--dry-run`.
+- Dettagli, tabella dei file scritti e taratura (`config.toml`): `${CLAUDE_SKILL_DIR}/README.md`.
