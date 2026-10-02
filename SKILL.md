@@ -1,5 +1,6 @@
 ---
 name: keep-fresh
+disable-model-invocation: true
 description: Use when a git repository needs agent context set up, updated or repaired - no docs/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
 ---
 

@@ -35,8 +35,9 @@ New-Item -ItemType Junction -Path "$HOME\.claude\skills\keep-fresh" -Target "C:\
 ln -s ~/projects/keep_fresh ~/.claude/skills/keep-fresh
 ```
 
-Poi `/keep-fresh` dentro il progetto da preparare, oppure basta chiederlo ("prepara il
-contesto per gli agenti"). La skill lancia lo script sul repository della cartella
+Poi `/keep-fresh` dentro il progetto da preparare. La skill è **solo manuale**
+(`disable-model-invocation: true`): l'agente non la attiva da solo e la sua descrizione
+non entra nel contesto delle sessioni, perché serve di rado. Lancia lo script sul repository della cartella
 corrente, prima a vuoto, e chiede conferma prima di scrivere. La procedura è in `SKILL.md`.
 
 ## Uso in breve
