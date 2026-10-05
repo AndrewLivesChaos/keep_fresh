@@ -54,6 +54,26 @@ Poi `/keep-fresh` dentro il progetto da preparare. La skill è **solo manuale**
 non entra nel contesto delle sessioni, perché serve di rado. Lancia lo script sul repository della cartella
 corrente, prima a vuoto, e chiede conferma prima di scrivere. La procedura è in `SKILL.md`.
 
+## Controllare che funzioni: `--status`
+
+```powershell
+python agent_context_init.py --status      # o: /keep-fresh status
+```
+
+Stato dell'impianto nel repository corrente, **in sola lettura**: layout, versione installata
+e se coincide con questa copia, file gestiti, hook agganciati per ogni agente con la data
+dell'ultima esecuzione (dalla traccia `.git/agent-hooks.log`) e l'ultimo `Stop`, esito del
+lint con freschezza di `status.md` e peso dell'iniezione, copie dell'inizializzatore diverse.
+In fondo l'elenco "da sistemare". Esce 0 se non c'è niente da sistemare, 1 altrimenti.
+
+L'ultima esecuzione è l'unico segnale per gli hook, che sono fail-open: se smettono di
+partire non danno errori, e l'ultima riga della traccia diventa vecchia.
+
+Provato su Windows 11, Python 3.14.7: su un progetto vero (6077 file, `.git` compreso:
+nessun file cambiato dopo l'esecuzione) e in repository finti: senza impianto, con layout
+precedente, dopo la migrazione. La sola lettura è nella prova a vuoto, verificata anche in
+negativo. Non provato su macOS/Linux.
+
 ## Uso in breve
 
 Serve **git**, e **Python 3.14** o successivo raggiungibile come `python` su Windows e

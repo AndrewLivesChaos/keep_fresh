@@ -416,8 +416,28 @@ def smoke_test() -> bool:
     def stop_hook(stdin):
         return run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "prova",
                    stdin=stdin)
+    def snap():
+        """Percorso, dimensione e data di ogni file, .git compreso: per provare la sola lettura."""
+        out = {}
+        for q in tmp.rglob("*"):
+            if q.is_file():
+                try:
+                    st = q.stat()
+                    out[q.relative_to(tmp).as_posix()] = (st.st_size, st.st_mtime_ns)
+                except OSError:
+                    pass
+        return out
+
+    def cambiati(prima):
+        dopo = snap()
+        return sorted(k for k in set(prima) | set(dopo) if prima.get(k) != dopo.get(k))
+
     try:
         run("git", "init", "-q", ".")
+        r = run(*init, "--status")
+        step("--status senza impianto: dice che non e' installato ed esce 1",
+             r.returncode == 1 and "non e' installato" in r.stdout
+             and not (tmp / TOOL_DIR).exists(), r.stdout[-400:])
 
         # 1. Cartella vuota, nessun commit.
         r = run(*init)
@@ -434,6 +454,14 @@ def smoke_test() -> bool:
         run("git", "add", "-A")
         run("git", "commit", "-q", "-m", "marcatore")
         lint("dopo il primo commit")
+        prima = snap()
+        r = run(*init, "--status")
+        step("--status mostra layout, versione, hook e lint",
+             r.returncode in (0, 1) and all(s in r.stdout for s in (
+                 "layout", "versione", "Claude Code", "3/3 agganciati", "lint")),
+             r.stdout[-700:])
+        step("--status e' di sola lettura: nessun file cambia, .git compreso",
+             not cambiati(prima), f"{cambiati(prima)}")
 
         # 3. Il codice compare dopo, in una directory che nessuno ha dichiarato.
         (tmp / "lib").mkdir()
@@ -733,6 +761,11 @@ def smoke_test() -> bool:
         run("git", "add", "-A")
         run("git", "commit", "-q", "-m", "marcatore dello stato")
 
+        prima = snap()
+        r = run(*init, "--status")
+        step("--status su un layout precedente: lo dice, esce 1 e non scrive",
+             r.returncode == 1 and "PRECEDENTE" in r.stdout and not cambiati(prima),
+             r.stdout[-500:] + f"{cambiati(prima)}")
         r = run(*init)
         step("layout precedente senza --force: si rifiuta (exit 2)",
              r.returncode == 2 and "layout precedente" in r.stdout, r.stdout[-500:])
@@ -802,6 +835,9 @@ def smoke_test() -> bool:
         step("dopo la migrazione i vecchi script gestiti non contano come codice cambiato",
              "[FRESCHEZZA]" not in out7 and "commit hanno toccato il codice" not in out7,
              _lint_lines(out7))
+        r = run(*init, "--status")
+        step("--status dopo la migrazione: layout nuovo",
+             "nuovo (" in r.stdout and "PRECEDENTE" not in r.stdout, r.stdout[-500:])
         prima = run("git", "status", "--porcelain").stdout
         r = run(*init, "--force")
         step("rilanciato, non migra di nuovo e non cambia niente",
@@ -1765,6 +1801,170 @@ def ensure_gitignore(root: Path, dry: bool) -> str:
     return f"aggiunte {len(add)} righe"
 
 
+# ----------------------------------------------------------------------------- status
+
+HOOK_LOG_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+(\S+)\s+(\S+)\s+(.*)$")
+
+
+def _ago(when: str) -> str:
+    from datetime import datetime
+    try:
+        delta = datetime.now() - datetime.strptime(when, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return ""
+    s = int(delta.total_seconds())
+    if s < 3600:
+        return f"{max(s // 60, 0)} min fa"
+    if s < 86400:
+        return f"{s // 3600} h fa"
+    return f"{s // 86400} giorni fa"
+
+
+def hook_runs(root: Path) -> dict:
+    """
+    Dalla traccia .git/agent-hooks.log: per ogni agente, l'ultima riga di ogni evento.
+    Sola lettura. Un hook fail-open che smette di girare non da' errori: l'unico segno
+    e' che l'ultima riga diventa vecchia.
+    """
+    g = git(root, "rev-parse", "--git-dir")
+    if not g:
+        return {}
+    gd = Path(g) if Path(g).is_absolute() else root / g
+    try:
+        lines = (gd / "agent-hooks.log").read_text(encoding="utf-8",
+                                                   errors="replace").splitlines()
+    except OSError:
+        return {}
+    last = {}
+    for line in lines:
+        m = HOOK_LOG_RE.match(line)
+        if m:
+            when, agent, event, outcome = m.groups()
+            last.setdefault(agent, {})[event] = (when, outcome)
+    return last
+
+
+def status(root: Path, payload: dict) -> int:
+    """
+    Lo stato dell'impianto in questo repository, in sola lettura: non scrive niente, nemmeno
+    i compilati di Python ne' l'indice di git. Esce 0 se non c'e' niente da sistemare, 1
+    altrimenti. Mette insieme cio' che prima si ricostruiva da pezzi: versione, layout, hook,
+    traccia, lint, freschezza, copie dell'inizializzatore.
+    """
+    interp = "python" if sys.platform == "win32" else "python3"
+    print(f"keep-fresh: stato di {root}")
+    print("(sola lettura: non scrive niente)\n")
+
+    problemi = []
+    layout = old_layout(root)
+    layout_old = bool(layout["managed"] or layout["context"])
+    installato = (root / VERSION_FILE).is_file() or (root / CORE_SCRIPT).is_file()
+
+    def riga(flag, label, text):
+        print(f"  [{flag}]  {label:<18}{text}")
+
+    print("Impianto")
+    if layout_old:
+        riga("!!", "layout", f"PRECEDENTE (script in scripts/, contesto in {OLD_CONTEXT_DIR}/)")
+        problemi.append(f"layout precedente: migrarlo sposta dei file. Prima `{interp} "
+                        f"agent_context_init.py --dry-run`, poi con --force.")
+    elif installato:
+        riga("OK", "layout", f"nuovo ({TOOL_DIR}/ e {CONTEXT_DIR}/)")
+    else:
+        riga("!!", "layout", "non installato")
+        print("\nkeep-fresh non e' installato in questo repository.")
+        print(f"Per installarlo: {interp} agent_context_init.py --dry-run, poi senza --dry-run.")
+        return 1
+
+    try:
+        rec = json.loads((root / VERSION_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    if rec is None:
+        riga("!!", "versione", f"{VERSION_FILE} manca o non e' leggibile")
+    else:
+        uguale = rec.get("payload_sha") == STAMP.get("payload_sha")
+        riga("OK" if uguale else "..", "versione",
+             f"installata: {describe_stamp(rec)}")
+        if not uguale:
+            print(f"{'':<26}questa copia dello script: {describe_stamp(STAMP)}")
+            print(f"{'':<26}se questa e' piu' recente: rilancia con --force")
+
+    drift = version_drift(root, payload)
+    riga("!!" if drift else "OK", "file gestiti",
+         "non coincidono con questa copia dello script" if drift
+         else "coincidono con questa copia dello script")
+    problemi += drift
+
+    print("\nHook")
+    runs = hook_runs(root)
+    for name, agent in AGENTS.items():
+        try:
+            cfg = json.loads((root / agent["config"]).read_text(encoding="utf-8"))
+            agganciati = [ev for ev, _ in HOOK_EVENTS
+                          if _our_hooks(cfg.get("hooks", {}).get(ev))]
+        except (OSError, ValueError, AttributeError):
+            agganciati = []
+        non_fidato = name == "codex" and codex_trusted(root) is False
+        ok = len(agganciati) == len(HOOK_EVENTS) and not non_fidato
+        riga("OK" if ok else "!!", agent["label"],
+             f"{len(agganciati)}/{len(HOOK_EVENTS)} agganciati in {agent['config']}")
+        mine = runs.get(name, {})
+        if mine:
+            ultima = max(mine.values(), key=lambda v: v[0])[0]
+            print(f"{'':<26}ultima esecuzione: {ultima} ({_ago(ultima)})")
+            stop = mine.get("Stop")
+            if stop:
+                print(f"{'':<26}ultimo Stop: {stop[0]}  {stop[1][:70]}")
+        else:
+            print(f"{'':<26}nessuna esecuzione in traccia (.git/agent-hooks.log): "
+                  f"se ci hai lavorato, gli hook non partono")
+        if non_fidato:
+            print(f"{'':<26}progetto NON fidato in ~/.codex/config.toml: Codex salta gli hook")
+
+    print("\nQualita'")
+    lint = root / LINT_SCRIPT
+    if not lint.is_file():
+        riga("!!", "lint", f"{LINT_SCRIPT} manca")
+    else:
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", GIT_OPTIONAL_LOCKS="0")
+        r = subprocess.run([sys.executable, str(lint)], cwd=str(root), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", env=env)
+        out = r.stdout
+        n_err = int((re.search(r"^ERRORI: (\d+)", out, re.M) or [0, 0])[1])
+        n_warn = int((re.search(r"^AVVISI: (\d+)", out, re.M) or [0, 0])[1])
+        if r.returncode == 0:
+            riga("OK", "lint", f"nessun errore, {n_warn} avvisi")
+        else:
+            riga("!!", "lint", f"{n_err or '?'} errori, {n_warn} avvisi (exit {r.returncode})")
+            problemi.append(f"il lint esce con errore: `{interp} {LINT_SCRIPT}` dice quali.")
+        for tag, msg in re.findall(r"^\s+\[([A-Z]+)\] (.*)$", out, re.M)[:6]:
+            print(f"{'':<26}[{tag}] {msg[:88]}")
+        for needle in ("riconciliato a", "iniezione di avvio"):
+            m = re.search(rf"^\s*(.*{needle}.*)$", out, re.M)
+            if m:
+                print(f"{'':<26}{m.group(1).strip()[:88]}")
+
+    copie = stale_copies(root)
+    riga("!!" if copie else "OK", "copie dell'init",
+         f"{len(copie)} diversa/e da questa" if copie else "nessuna altra copia diversa")
+    problemi += copie
+
+    # I problemi della diagnosi (hook non agganciati, interprete, Codex, marcatore...).
+    for p in diagnose(root, interp):
+        if p not in problemi and not p.startswith(tuple(c[:30] for c in copie)):
+            problemi.append(p)
+
+    print()
+    if not problemi:
+        print("Esito: tutto a posto.")
+        return 0
+    print(f"Esito: {len(problemi)} cosa/e da sistemare:")
+    for n, p in enumerate(problemi, 1):
+        print(f"  {n}. {p}")
+    return 1
+
+
 # ------------------------------------------------------------------------------ main
 
 def main() -> int:
@@ -1782,6 +1982,10 @@ def main() -> int:
                     help="verifica che il payload sia leggibile e coincida col timbro")
     ap.add_argument("--version", action="store_true",
                     help="dice da dove e quando viene questa copia ed esce")
+    ap.add_argument("--status", action="store_true",
+                    help="stato dell'impianto in questo repository, in sola lettura: "
+                         "versione, layout, hook, ultima esecuzione, lint. Esce 1 se "
+                         "c'e' qualcosa da sistemare")
     args = ap.parse_args()
 
     if args.version:
@@ -1818,6 +2022,9 @@ def main() -> int:
         print("Questo file non ha payload: rigeneralo con --pack nel repository "
               "sorgente dello strumento.", file=sys.stderr)
         return 1
+
+    if args.status:
+        return status(root, payload)
 
     interp = "python" if sys.platform == "win32" else "python3"
     print(f"Versione   : {describe_stamp(STAMP)}")

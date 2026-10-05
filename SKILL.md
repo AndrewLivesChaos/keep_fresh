@@ -1,6 +1,7 @@
 ---
 name: keep-fresh
 disable-model-invocation: true
+argument-hint: "[status]"
 description: Use when a git repository needs agent context set up, updated or repaired - no docs/keep-fresh/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
 ---
 
@@ -10,6 +11,14 @@ Prepara un repository git perché gli agenti ci lavorino con un contesto che non
 un lint dei documenti, hook che iniettano lo stato del lavoro e bloccano il turno se il
 codice è cambiato e lo stato no. Lo script fa la meccanica; **i documenti li scrivi tu**,
 seguendo la guida che lo script installa.
+
+## Se invocata con `status`
+
+Se l'argomento e' `status` (`$ARGUMENTS`), non installare niente: esegui solo
+`python "${CLAUDE_SKILL_DIR}/agent_context_init.py" --status` (`python3` su macOS/Linux) nel
+repository corrente e riporta all'utente cosa dice: layout, versione, hook agganciati e quando
+hanno girato l'ultima volta, lint, e l'elenco "da sistemare". E' di sola lettura. Esce 1 se
+c'e' qualcosa da sistemare: non e' un errore del comando.
 
 ## Prima di cominciare
 
