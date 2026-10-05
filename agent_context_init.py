@@ -42,6 +42,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -62,11 +63,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-09-29T12:40:10',
-    'source': 'context_script',
-    'commit': '3ada75c',
-    'payload_dirty': False,
-    'payload_sha': '7b198ffafa48',
+    'packed_at': '2026-10-05T11:28:02',
+    'source': 'keep_fresh',
+    'commit': '093967c',
+    'payload_dirty': True,
+    'payload_sha': '652193a4a665',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -74,16 +75,37 @@ STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
 
 # Dove il repository di destinazione registra quale versione ha installato. E' un file
 # gestito: lo aggiorna --force insieme agli altri.
-VERSION_FILE = "scripts/agent_context_version.json"
+TOOL_DIR = ".keep-fresh"
+VERSION_FILE = f"{TOOL_DIR}/version.json"
 
 # Nel repository sorgente dello strumento, i file veri del payload stanno qui, con gli
 # stessi percorsi che avranno nel repository di destinazione.
 PAYLOAD_DIR = "payload"
 
-STATUS_FILE = "docs/context/status.md"
-CONFIG_FILE = "docs/context/config.toml"
+# L'impianto sta in due posti. La meccanica (script, taratura, guida) in TOOL_DIR: la
+# installa questo script, non la scrive nessuno. Il contesto (stato e documenti) in
+# CONTEXT_DIR: lo scrive l'agente, lo leggono le persone.
+CONTEXT_DIR = "docs/keep-fresh/context"
+STATUS_FILE = f"{CONTEXT_DIR}/status.md"
+CONFIG_FILE = f"{TOOL_DIR}/config.toml"
+GUIDE_FILE = f"{TOOL_DIR}/guide.md"
+SCRIPTS_DIR = f"{TOOL_DIR}/scripts"
+CORE_SCRIPT = f"{SCRIPTS_DIR}/context_core.py"
+LINT_SCRIPT = f"{SCRIPTS_DIR}/docs_lint.py"
+HOOKS_SCRIPT = f"{SCRIPTS_DIR}/agent_hooks.py"
+COST_SCRIPT = f"{SCRIPTS_DIR}/context_cost.py"
 # I file SEME: scritti solo se mancano, mai sovrascritti, nemmeno con --force.
 SEED_FILES = {CONFIG_FILE}
+
+# Il layout della versione precedente: script in scripts/, contesto in docs/context/,
+# guida in docs/. --force lo migra (vedi migrate_layout).
+OLD_CONTEXT_DIR = "docs/context"
+OLD_CONFIG_FILE = f"{OLD_CONTEXT_DIR}/config.toml"
+OLD_MANAGED = {
+    "scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
+    "scripts/context_cost.py", "scripts/agent_context_version.json",
+    "docs/agent_docs_guide.md",
+}
 
 STATUS_SKELETON = """# Stato del lavoro
 {marker}
@@ -91,7 +113,7 @@ STATUS_SKELETON = """# Stato del lavoro
 
 > Il marcatore `context-verified-at` qui sopra e' il commit fino al quale questo
 > documento e' stato **riconciliato con il codice**. Chi lo riconcilia lo riporta a
-> `HEAD`. `python scripts/docs_lint.py` (`python3` su macOS/Linux) dice quanti commit hanno toccato il codice da
+> `HEAD`. `python .keep-fresh/scripts/docs_lint.py` (`python3` su macOS/Linux) dice quanti commit hanno toccato il codice da
 > allora: e' l'unica misura oggettiva di quanto questo file sia invecchiato.
 >
 > I blocchi delimitati dai marcatori `session-start` sono le sezioni che l'hook di avvio
@@ -153,24 +175,25 @@ Dal piu' recente. Le voci risolte si **barrano**, non si cancellano:
 `~~voce~~ - FATTO il <data>`.
 """
 
-PROMPT = """Leggi docs/agent_docs_guide.md ed eseguilo su questo repository.
+PROMPT = """Leggi .keep-fresh/guide.md ed eseguilo su questo repository.
 Sono istruzioni operative, non la descrizione di un altro progetto.
 
 Prima di scrivere, chiedimi quello che non e' deducibile dal repo: stato del lavoro,
 decisioni prese fuori dal codice, verifiche fatte a mano.
 
-In scripts/ trovi gia' il lint e gli hook, e NON vanno riscritti. Dove sta il
+In .keep-fresh/scripts/ trovi gia' il lint e gli hook, e NON vanno riscritti. Dove sta il
 codice lo rilevano da soli a ogni esecuzione. La taratura a mano sta in
-docs/context/config.toml: le liste di eccezioni del lint partono vuote di proposito, e si
+.keep-fresh/config.toml: le liste di eccezioni del lint partono vuote di proposito, e si
 riempiono guardando i falsi positivi del primo giro, con il motivo scritto per ogni voce.
+Il contesto che scrivi tu sta in docs/keep-fresh/context/.
 
-Fai girare `<python> scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
+Fai girare `<python> .keep-fresh/scripts/docs_lint.py` e mostrami l'output vero prima di dichiarare
 concluso. Al primo giro sara' rumoroso: correggi prima i CONTROLLI, poi i documenti. Una
 segnalazione che descrive un difetto vero — un riferimento a una rinomina mai fatta, un
 simbolo sparito — non va messa a tacere: va registrata come lavoro aperto.
 
-A lavoro finito i file dell'impianto (scripts/, docs/, AGENTS.md, CLAUDE.md, .gitignore)
-devono essere versionati, non lasciati untracked: la guida dice quali sono e cosa NON
+A lavoro finito i file dell'impianto (.keep-fresh/, docs/keep-fresh/, AGENTS.md, CLAUDE.md,
+.gitignore) devono essere versionati, non lasciati untracked: la guida dice quali sono e cosa NON
 committare. Segui la regola su commit e push che ti ho dato, e non fare push."""
 
 # Aggiunta al prompt quando il repository aveva un contesto della versione precedente.
@@ -181,8 +204,16 @@ non ricominciare da zero, allinealo alla guida attuale. config.toml contiene la 
 migrata dal lint precedente: sostituisci i motivi generici con quelli veri e togli le voci
 che non riguardano questo progetto. Togli dai documenti i riferimenti agli hook in
 .claude/hooks/ e a ogni file che non esiste piu' (il lint li segnala), e descrivi gli hook
-comuni in scripts/agent_hooks.py e il loro aggancio locale per ogni agente. La
+comuni in .keep-fresh/scripts/agent_hooks.py e il loro aggancio locale per ogni agente. La
 cronologia di status.md non si riscrive: le voci superate si barrano."""
+
+# Aggiunta al prompt quando e' appena stato migrato il layout delle cartelle.
+PROMPT_LAYOUT = """I file dell'impianto sono stati spostati: gli script da scripts/ a .keep-fresh/scripts/,
+la taratura a .keep-fresh/config.toml, la guida a .keep-fresh/guide.md, il contesto da
+docs/context/ a docs/keep-fresh/context/. Aggiorna i documenti che citano ancora i
+vecchi percorsi (AGENTS.md, CLAUDE.md, docs/keep-fresh/context/, README e permessi in
+.claude/settings.json): l'elenco dei file e' fra i punti aperti qui sotto. Piani e
+specifiche storici non si riscrivono: descrivono il passato."""
 
 
 # --------------------------------------------------------------------------- payload
@@ -227,7 +258,7 @@ def payload_core(payload: dict):
     viene rilevato come codice usando lo STESSO modulo che useranno lint e hook: una
     seconda implementazione qui divergerebbe.
     """
-    src = payload.get("scripts/context_core.py")
+    src = payload.get(CORE_SCRIPT)
     if not src:
         return None
     mod = types.ModuleType("context_core")
@@ -372,7 +403,7 @@ def smoke_test() -> bool:
             failures.append(f"{name}" + (f"\n      {detail}" if detail else ""))
 
     def lint(name):
-        r = run(sys.executable, "scripts/docs_lint.py")
+        r = run(sys.executable, LINT_SCRIPT)
         out = r.stdout + r.stderr
         step(f"{name}: il lint esce 0", r.returncode == 0, _lint_lines(out))
         step(f"{name}: nessun errore interno del lint", "[INTERNO]" not in out,
@@ -382,7 +413,7 @@ def smoke_test() -> bool:
     init = [sys.executable, str(Path(__file__).resolve())]
 
     def stop_hook(stdin):
-        return run(sys.executable, "scripts/agent_hooks.py", "stop", "--agent", "prova",
+        return run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "prova",
                    stdin=stdin)
     try:
         run("git", "init", "-q", ".")
@@ -423,7 +454,7 @@ def smoke_test() -> bool:
         r = stop_hook('{"session_id":"s2"}')
         step("codice nuovo committato: Stop blocca in una sessione nuova",
              _blocks(r, "lib/"), f"exit {r.returncode}: {r.stdout[-400:]}")
-        r = run(sys.executable, "scripts/agent_hooks.py", "session-start", "--agent", "prova",
+        r = run(sys.executable, HOOKS_SCRIPT, "session-start", "--agent", "prova",
                 stdin='{"source":"startup"}')
         step("SessionStart esce 0 e inietta lo stato",
              r.returncode == 0 and "Stato del progetto" in r.stdout
@@ -441,12 +472,12 @@ def smoke_test() -> bool:
         cfg_orig = cfg_p.read_text(encoding="utf-8")
         cfg_p.write_text(cfg_orig.replace("max_injection_chars = 8000",
                                           "max_injection_chars = 40"), encoding="utf-8")
-        r = run(sys.executable, "scripts/agent_hooks.py", "session-start", "--agent", "prova",
+        r = run(sys.executable, HOOKS_SCRIPT, "session-start", "--agent", "prova",
                 stdin='{"source":"startup"}')
         step("oltre il tetto SessionStart inietta solo l'indice",
              r.returncode == 0 and "solo il loro indice" in r.stdout,
              f"exit {r.returncode}: {r.stdout[-400:]}")
-        r = run(sys.executable, "scripts/docs_lint.py")
+        r = run(sys.executable, LINT_SCRIPT)
         step("oltre il tetto il lint avvisa e non fallisce",
              r.returncode == 0 and "[PESO]" in r.stdout, _lint_lines(r.stdout))
         cfg_p.write_text(cfg_orig, encoding="utf-8")
@@ -474,7 +505,7 @@ def smoke_test() -> bool:
                                 "cache_read_input_tokens": 1000, "output_tokens": 20})]
             (proj / "s1.jsonl").write_text(
                 "".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
-            r = subprocess.run([sys.executable, "scripts/context_cost.py", "--json"],
+            r = subprocess.run([sys.executable, COST_SCRIPT, "--json"],
                                cwd=str(tmp), capture_output=True, text=True,
                                encoding="utf-8", errors="replace",
                                env=dict(env, CLAUDE_CONFIG_DIR=str(home),
@@ -518,7 +549,7 @@ def smoke_test() -> bool:
             return p
 
         def prompt_hook(tp, text="continua", sid="p1"):
-            return run(sys.executable, "scripts/agent_hooks.py", "prompt", "--agent", "prova",
+            return run(sys.executable, HOOKS_SCRIPT, "prompt", "--agent", "prova",
                        stdin=json.dumps({"session_id": sid, "transcript_path": str(tp),
                                          "prompt": text}))
 
@@ -596,7 +627,7 @@ def smoke_test() -> bool:
             written = None
         step("la versione installata e' registrata col timbro dello script",
              bool(written) and rec == written, f"registrata {rec}, timbro {written}")
-        lint_py = tmp / "scripts" / "docs_lint.py"
+        lint_py = tmp / LINT_SCRIPT
         lint_py.write_text(lint_py.read_text(encoding="utf-8") + "# ritocco\n",
                            encoding="utf-8")
         r = run(*init)
@@ -646,13 +677,106 @@ def smoke_test() -> bool:
         step("il prompt chiede di allineare, non di rifare",
              "Il contesto esiste gia'" in r.stdout, r.stdout[-800:])
         lint("aggiornamento dalla versione precedente")
+        step("il lint scritto dentro lo script precedente viene tolto",
+             not (tmp / "scripts" / "docs_lint.py").exists(), r.stdout[-600:])
+
+        # 6. Il layout della versione precedente (script in scripts/, contesto in
+        # docs/context/, guida in docs/), com'e' oggi nei progetti gia' inizializzati.
+        # Lo spostamento deve tenere intatto il lavoro umano (stato, taratura, documenti),
+        # lasciare stare gli script che sono del progetto, e non scrivere niente senza
+        # --force.
+        secondo = tmp
+        tmp = Path(tempfile.mkdtemp(prefix="agent-context-smoke-"))
+        run("git", "init", "-q", ".")
+        stato_vecchio = ("# Stato del lavoro\n\n<!-- context-verified-at: abc1234 -->\n\n"
+                         "stato scritto a mano\n")
+        taratura = "# taratura scritta a mano\n[code]\ninclude = []\nexclude = [\"vendor/\"]\n"
+        vecchio_hook = json.dumps({"hooks": {"Stop": [{"hooks": [{
+            "type": "command", "timeout": 20,
+            "command": "python -c \"import runpy;runpy.run_path('scripts/agent_hooks.py')\""
+                       " stop --agent claude"}]}]}})
+        for rel, text in {
+            "src/app.ts": "export const x = 1\n",
+            ".gitignore": ".claude/settings.local.json\n.codex/hooks.json\n",
+            "scripts/docs_lint.py": '"""\ndocs_lint — vecchio\n"""\nimport context_core\n',
+            "scripts/context_core.py": '"""\ncontext_core — vecchio\n"""\n',
+            "scripts/agent_hooks.py": '"""\nagent_hooks — vecchio\n"""\n',
+            "scripts/context_cost.py": '"""\ncontext_cost — vecchio\n"""\n',
+            "scripts/agent_context_version.json": "{}\n",
+            "scripts/build.py": "# uno script del progetto, non nostro\n",
+            "scripts/__pycache__/context_core.cpython-314.pyc": "x",
+            "docs/agent_docs_guide.md": "# Istruzioni per l'agente — creare il contesto di progetto\n",
+            "docs/context/status.md": stato_vecchio,
+            "docs/context/architecture.md": "# Architettura\nVedi `scripts/docs_lint.py`.\n",
+            "docs/context/config.toml": taratura,
+            "AGENTS.md": "Lint: python scripts/docs_lint.py. Guida: docs/agent_docs_guide.md\n",
+            ".claude/settings.local.json": vecchio_hook,
+        }.items():
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / rel).write_text(text, encoding="utf-8")
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "layout precedente")
+
+        r = run(*init)
+        step("layout precedente senza --force: si rifiuta (exit 2)",
+             r.returncode == 2 and "layout precedente" in r.stdout, r.stdout[-500:])
+        step("layout precedente senza --force: non scrive niente",
+             run("git", "status", "--porcelain").stdout.strip() == "",
+             run("git", "status", "--porcelain").stdout)
+        r = run(*init, "--dry-run")
+        step("layout precedente con --dry-run: dice cosa sposterebbe, non scrive",
+             r.returncode == 0 and "sposterebbe" in r.stdout
+             and run("git", "status", "--porcelain").stdout.strip() == "", r.stdout[-600:])
+
+        r = run(*init, "--force")
+        step("migrazione del layout: esce 0", r.returncode == 0, r.stderr[-600:] + r.stdout[-600:])
+        step("lo stato scritto a mano passa intatto in " + CONTEXT_DIR,
+             (tmp / STATUS_FILE).is_file()
+             and (tmp / STATUS_FILE).read_text(encoding="utf-8") == stato_vecchio)
+        step("gli altri documenti di contesto seguono lo stato",
+             (tmp / CONTEXT_DIR / "architecture.md").is_file()
+             and not (tmp / OLD_CONTEXT_DIR).exists())
+        step("la taratura scritta a mano passa intatta in " + CONFIG_FILE,
+             (tmp / CONFIG_FILE).is_file()
+             and (tmp / CONFIG_FILE).read_text(encoding="utf-8") == taratura)
+        step("i file dell'impianto nuovi ci sono",
+             all((tmp / rel).is_file() for rel in (LINT_SCRIPT, CORE_SCRIPT, HOOKS_SCRIPT,
+                                                   COST_SCRIPT, GUIDE_FILE, VERSION_FILE)))
+        step("i vecchi file gestiti non ci sono piu', compilati compresi",
+             not any((tmp / rel).exists() for rel in OLD_MANAGED)
+             and not (tmp / "scripts" / "__pycache__").exists())
+        step("lo script del progetto in scripts/ resta dov'e'",
+             (tmp / "scripts" / "build.py").is_file())
+        r2 = run("git", "diff", "--cached", "--name-status", "-M")
+        step("git vede lo spostamento come rinomina (la storia resta)",
+             any(l.startswith("R") and STATUS_FILE in l for l in r2.stdout.splitlines()),
+             r2.stdout[-600:])
+        try:
+            cfg6 = json.loads((tmp / ".claude" / "settings.local.json").read_text(
+                encoding="utf-8"))
+            stop = [h["command"] for e in cfg6["hooks"]["Stop"] for h in e["hooks"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            stop = []
+        step("il vecchio aggancio e' riscritto sul nuovo script, senza doppioni",
+             len(stop) == 1 and ".keep-fresh/scripts/agent_hooks.py" in stop[0], f"{stop}")
+        out6 = run(sys.executable, LINT_SCRIPT)
+        step("il lint si esegue dalla posizione nuova", out6.returncode in (0, 1)
+             and "[INTERNO]" not in out6.stdout + out6.stderr, _lint_lines(out6.stdout))
+        step("i documenti che citano i vecchi percorsi sono segnalati",
+             "citano ancora i vecchi percorsi" in r.stdout and "AGENTS.md" in r.stdout
+             and "architecture.md" in r.stdout, r.stdout[-900:])
+        prima = run("git", "status", "--porcelain").stdout
+        r = run(*init, "--force")
+        step("rilanciato, non migra di nuovo e non cambia niente",
+             r.returncode == 0 and "migrazione layout" not in r.stdout
+             and run("git", "status", "--porcelain").stdout == prima, r.stdout[-500:])
     finally:
-        for d in {tmp, locals().get("primo", tmp)}:
+        for d in {tmp, locals().get("primo", tmp), locals().get("secondo", tmp)}:
             shutil.rmtree(d, ignore_errors=True)
 
     if not failures:
         print("Prova a vuoto: repo vuoto, primo commit, codice comparso dopo e "
-              "aggiornamento dalla versione precedente, tutto ok.")
+              "aggiornamento dalla versione precedente e dal suo layout, tutto ok.")
         return True
     print("\nPROVA A VUOTO FALLITA — cio' che questo script genera non si comporta come\n"
           "dovrebbe. Payload scritto ma da correggere:", file=sys.stderr)
@@ -718,17 +842,21 @@ class Writer:
     def __init__(self, root: Path, force: bool, dry: bool):
         self.root, self.force, self.dry = root, force, dry
         self.written, self.updated, self.skipped, self.protected = [], [], [], []
+        # Nella prova a vuoto di una migrazione, i file che verrebbero spostati non sono
+        # ancora al loro posto: si fa finta che ci siano, o li direbbe "creati" vuoti.
+        self.assume = set()
 
     def put(self, rel: str, content: str, seed: bool = False) -> None:
         p = self.root / rel
-        if p.exists():
+        exists = p.exists() or rel in self.assume
+        if exists:
             if seed:
                 self.protected.append(rel)
                 return
             if not self.force:
                 self.skipped.append(rel)
                 return
-        (self.updated if p.exists() else self.written).append(rel)
+        (self.updated if exists else self.written).append(rel)
         if self.dry:
             return
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -765,7 +893,7 @@ def legacy_tuning(root: Path, payload: dict) -> dict:
         return {}
     # Le parole del nucleo neutro stanno gia' nel lint nuovo: migrarle sarebbe rumore.
     core_words = set()
-    m = re.search(r"NOT_SYMBOLS_CORE = (\{.*?\n\})", payload.get("scripts/docs_lint.py", ""), re.S)
+    m = re.search(r"NOT_SYMBOLS_CORE = (\{.*?\n\})", payload.get(LINT_SCRIPT, ""), re.S)
     if m:
         try:
             core_words = {w.lower() for w in ast.literal_eval(m.group(1))}
@@ -882,9 +1010,146 @@ def add_marker(root: Path, dry: bool) -> str:
     return f"marcatore di freschezza aggiunto allo scheletro di status.md ({sha})"
 
 
+# ------------------------------------------------------------- migrazione del layout
+
+# Cio' che riconosce un file della versione precedente come NOSTRO. Un progetto puo'
+# avere un suo scripts/docs_lint.py: si toglie solo se porta uno di questi segni.
+OLD_FINGERPRINTS = {
+    "scripts/docs_lint.py": ("docs_lint —",),
+    "scripts/context_core.py": ("context_core —",),
+    "scripts/agent_hooks.py": ("agent_hooks —",),
+    "scripts/context_cost.py": ("context_cost —",),
+    "docs/agent_docs_guide.md": ("Istruzioni per l'agente — creare il contesto",),
+}
+# I compilati che quegli script lasciavano in scripts/__pycache__/.
+OLD_STALE_PYC =("docs_lint", "context_core", "agent_hooks", "context_cost")
+
+
+def _old_managed_is_ours(root: Path, rel: str) -> bool:
+    p = root / rel
+    if not p.is_file():
+        return False
+    if rel == "scripts/agent_context_version.json":
+        return True
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if rel == "scripts/docs_lint.py" and TUNING_BEGIN in text:
+        return True
+    return any(s in text[:800] for s in OLD_FINGERPRINTS.get(rel, ()))
+
+
+def old_layout(root: Path) -> dict:
+    """
+    Cosa resta del layout precedente. `managed`: i file gestiti vecchi che sono davvero
+    nostri. `context`: docs/context/ esiste. Entrambi vuoti: niente da migrare.
+    """
+    return {
+        "managed": [rel for rel in sorted(OLD_MANAGED) if _old_managed_is_ours(root, rel)],
+        "context": (root / OLD_CONTEXT_DIR).is_dir(),
+    }
+
+
+def layout_conflicts(root: Path, layout: dict) -> list:
+    """Cosa impedirebbe lo spostamento: non si fonde, non si sovrascrive."""
+    out = []
+    if layout["context"] and (root / CONTEXT_DIR).exists():
+        out.append(f"esistono sia {OLD_CONTEXT_DIR}/ sia {CONTEXT_DIR}/: non so quale tenere. "
+                   f"Unisci a mano le due cartelle e rilancia")
+    if (root / OLD_CONFIG_FILE).is_file() and (root / CONFIG_FILE).exists():
+        out.append(f"esistono sia {OLD_CONFIG_FILE} sia {CONFIG_FILE}: tieni quella giusta "
+                   f"e togli l'altra")
+    return out
+
+
+def _move(root: Path, src: str, dst: str) -> None:
+    """git mv se git conosce src (la storia resta), altrimenti un normale spostamento."""
+    (root / dst).parent.mkdir(parents=True, exist_ok=True)
+    if git(root, "ls-files", "--", src):
+        r = subprocess.run(["git", "mv", src, dst], cwd=str(root), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        if r.returncode == 0:
+            return
+    shutil.move(str(root / src), str(root / dst))
+
+
+def migrate_layout_moves(root: Path, layout: dict, dry: bool) -> list:
+    """
+    Sposta il contesto e la taratura. VA PRIMA di tutto il resto: dopo, il lint e gli hook
+    nuovi trovano config.toml e status.md dove li cercano, e la taratura fatta a mano non
+    viene scambiata per un file che manca (e rifatta vuota).
+    """
+    msgs = []
+    had_cfg = (root / OLD_CONFIG_FILE).is_file()      # da guardare PRIMA di spostare
+    if layout["context"]:
+        msgs.append(f"{OLD_CONTEXT_DIR}/  ->  {CONTEXT_DIR}/")
+        if not dry:
+            _move(root, OLD_CONTEXT_DIR, CONTEXT_DIR)
+    if had_cfg:
+        msgs.append(f"{OLD_CONFIG_FILE}  ->  {CONFIG_FILE}")
+        if not dry:
+            _move(root, f"{CONTEXT_DIR}/config.toml", CONFIG_FILE)
+    return msgs
+
+
+def retire_old_managed(root: Path, layout: dict, dry: bool) -> list:
+    """
+    Toglie i file gestiti del layout precedente, dopo che quelli nuovi sono scritti. Solo
+    quelli riconosciuti come nostri, e i loro compilati. `scripts/` resta se contiene
+    altro: nei progetti e' pieno di file che non sono nostri.
+    """
+    tolti = list(layout["managed"])
+    cache = root / "scripts" / "__pycache__"
+    pyc = [p for p in cache.glob("*.pyc")
+           if p.name.split(".", 1)[0] in OLD_STALE_PYC] if cache.is_dir() else []
+    if not dry:
+        for rel in tolti + [p.relative_to(root).as_posix() for p in pyc]:
+            if git_tracks(root, rel):
+                subprocess.run(["git", "rm", "-q", "-f", "--", rel], cwd=str(root),
+                               capture_output=True, text=True)
+            elif (root / rel).exists():
+                (root / rel).unlink()
+        for d in (cache, root / "scripts", root / "docs"):
+            try:
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+            except OSError:
+                pass
+    return tolti + ([f"{len(pyc)} compilati in scripts/__pycache__/"] if pyc else [])
+
+
+OLD_REF_RE = re.compile(
+    r"(?<![\w./-])scripts/(?:docs_lint|context_core|agent_hooks|context_cost"
+    r"|agent_context_version)\b|(?<![\w./-])docs/context\b|agent_docs_guide")
+
+
+def old_path_references(root: Path) -> list:
+    """
+    I file versionati che citano ancora i vecchi percorsi. Non si riscrivono da soli: sono
+    prosa del progetto, e un cerca-e-sostituisci cieco rovinerebbe i documenti storici.
+    Restano fuori le copie dell'inizializzatore (contengono le stringhe nel payload) e i
+    piani storici di superpowers.
+    """
+    hits = []
+    for rel in filter(None, git(root, "ls-files").splitlines()):
+        if rel.endswith("agent_context_init.py") or rel.startswith(f"{TOOL_DIR}/") \
+                or rel.startswith("docs/superpowers/"):
+            continue
+        p = root / rel
+        try:
+            if not p.is_file() or p.stat().st_size > 2_000_000:
+                continue
+            n = len(OLD_REF_RE.findall(p.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if n:
+            hits.append((rel, n))
+    return hits
+
+
 # ------------------------------------------------------------------ agenti e loro hook
 
-HOOKS_SCRIPT = "scripts/agent_hooks.py"
 # (evento come lo chiamano gli agenti, argomento di agent_hooks.py)
 HOOK_EVENTS = [("SessionStart", "session-start"), ("Stop", "stop"),
                ("UserPromptSubmit", "prompt")]
@@ -1203,15 +1468,7 @@ def diagnose(root: Path, interp: str) -> list:
     """
     problemi = []
 
-    lint = root / "scripts" / "docs_lint.py"
-    if lint.is_file() and "context_core" not in lint.read_text(encoding="utf-8",
-                                                               errors="replace"):
-        problemi.append(
-            "scripts/docs_lint.py e' della versione precedente, con la taratura scritta\n"
-            "     dentro lo script. Rilancia con --force per aggiornarlo: le liste di\n"
-            "     eccezioni sono gia' state copiate in docs/context/config.toml, e\n"
-            "     config.toml non viene mai sovrascritto.")
-    for rel in ("scripts/context_core.py", HOOKS_SCRIPT):
+    for rel in (CORE_SCRIPT, HOOKS_SCRIPT):
         if not (root / rel).is_file():
             problemi.append(f"{rel} manca: lint e hook non funzionano. Rilancia con --force.")
 
@@ -1348,11 +1605,6 @@ def version_drift(root: Path, payload: dict) -> list:
     CONTENUTO, non la registrazione: la registrazione dice chi li ha scritti, ma un file
     toccato a mano dopo non lo dice nessuno.
     """
-    lint = root / "scripts" / "docs_lint.py"
-    if lint.is_file() and "context_core" not in lint.read_text(encoding="utf-8",
-                                                               errors="replace"):
-        return []                       # versione precedente: la diagnosi lo dice gia'
-
     diversi = []
     for rel, content in payload.items():
         p = root / rel
@@ -1404,8 +1656,9 @@ def main() -> int:
         description="Prepara la struttura di contesto/memoria per agenti in un repo.")
     ap.add_argument("--dry-run", action="store_true", help="dice cosa farebbe")
     ap.add_argument("--force", action="store_true",
-                    help="aggiorna lint, hook e guida. Non tocca status.md ne' "
-                         "config.toml, che sono tuoi")
+                    help="aggiorna lint, hook e guida; da un repository col layout "
+                         "precedente sposta i file in .keep-fresh/ e docs/keep-fresh/. "
+                         "Non tocca il contenuto di status.md ne' di config.toml, che sono tuoi")
     ap.add_argument("--pack", action="store_true",
                     help="nel repository sorgente dello strumento: rigenera il payload "
                          "da payload/")
@@ -1458,6 +1711,28 @@ def main() -> int:
         print("MODALITA' DRY-RUN: non viene scritto niente.")
     print()
 
+    # Il layout delle cartelle della versione precedente. Si sposta file, quindi serve
+    # --force: senza, non si scrive niente, perche' un giro a meta' lascerebbe due
+    # impianti (script nuovi e vecchi, due config.toml) e hook che puntano a uno dei due.
+    layout = old_layout(root)
+    layout_old = bool(layout["managed"] or layout["context"])
+    if layout_old:
+        conflitti = layout_conflicts(root, layout)
+        if conflitti:
+            print("Questo repository ha il layout precedente, ma non posso migrarlo:")
+            for c in conflitti:
+                print(f"  - {c}")
+            return 1
+        if not (args.force or args.dry_run):
+            print(f"Questo repository ha il layout precedente (script in scripts/, contesto in\n"
+                  f"{OLD_CONTEXT_DIR}/). Questa versione li tiene in {TOOL_DIR}/ e {CONTEXT_DIR}/.\n"
+                  f"Migrarlo sposta dei file: rilancia con --force, e prima con --dry-run per\n"
+                  f"vedere cosa succede. Non ho scritto niente.")
+            return 2
+        verbo = "sposterebbe" if args.dry_run else "spostato"
+        for m in migrate_layout_moves(root, layout, args.dry_run):
+            print(f"  migrazione layout: {verbo}  {m}")
+
     # Un contesto della versione precedente va riconosciuto PRIMA di scrivere: dopo,
     # --force ha gia' sostituito il lint e tolto gli hook vecchi.
     old_lint = root / "scripts" / "docs_lint.py"
@@ -1465,9 +1740,26 @@ def main() -> int:
                   or (old_lint.is_file() and "context_core" not in
                       old_lint.read_text(encoding="utf-8", errors="replace")))
 
+    # La taratura di una versione precedente va letta PRIMA che --force tolga o riscriva
+    # il vecchio lint che la contiene.
+    migrated = {} if (root / CONFIG_FILE).exists() else legacy_tuning(root, payload)
+    old_scope = None if (root / CONFIG_FILE).exists() else legacy_code_scope(root)
+
+    # I vecchi file gestiti si tolgono prima di rilevare il codice: restassero, sarebbero
+    # codice del progetto (i nuovi stanno in un'altra cartella) e finirebbero fra le
+    # esclusioni migrate dal lint precedente. Nella prova a vuoto non si toglie niente:
+    # si escludono dal conteggio e basta.
+    tolti_vecchi = []
+    if layout_old and not args.dry_run:
+        tolti_vecchi = retire_old_managed(root, layout, False)
+
     core, labels = payload_core(payload), []
     if core is not None:
         cfg, _ = core.load_config(root)
+        if layout_old and args.dry_run:
+            code = dict(cfg.get("code", {}))
+            code["exclude"] = list(code.get("exclude", [])) + layout["managed"]
+            cfg = dict(cfg, code=code)
         files = core.code_files(root, cfg)
         _, labels = core.code_scope(root, cfg)
         print("Codice rilevato adesso (lint e hook lo rilevano di nuovo a ogni esecuzione):")
@@ -1478,14 +1770,16 @@ def main() -> int:
             print("  nessuno, per ora. Va bene: quando il codice arriva, viene visto.")
         print()
 
-    # La taratura di una versione precedente va letta PRIMA che --force riscriva il lint.
-    migrated = {} if (root / CONFIG_FILE).exists() else legacy_tuning(root, payload)
     # Cio' che la rilevazione prende e il lint precedente escludeva. Si continua a
     # escluderlo: e' il comportamento che il progetto aveva, e lo si dice.
-    old_scope = None if (root / CONFIG_FILE).exists() else legacy_code_scope(root)
     excluded = [l for l in labels if l.rstrip("/") not in old_scope] if old_scope else []
 
     w = Writer(root, args.force, args.dry_run)
+    if args.dry_run and layout_old:
+        if (root / f"{OLD_CONTEXT_DIR}/status.md").is_file():
+            w.assume.add(STATUS_FILE)
+        if (root / OLD_CONFIG_FILE).is_file():
+            w.assume.add(CONFIG_FILE)
     for rel, content in payload.items():
         if rel == CONFIG_FILE and (migrated or excluded):
             rendered = render_config(content, migrated, excluded)
@@ -1540,9 +1834,23 @@ def main() -> int:
     if vecchi:
         print(f"  hook vecchi: {vecchi}")
     print(f"  .gitignore: {ensure_gitignore(root, args.dry_run)}")
+    if layout_old:
+        tolti = (retire_old_managed(root, layout, True) if args.dry_run else tolti_vecchi)
+        if tolti:
+            print(f"  layout precedente: {'toglierebbe' if args.dry_run else 'tolti'} "
+                  f"{', '.join(tolti)}")
 
     problemi = (diagnose(root, interp) + version_drift(root, payload)
                 if not args.dry_run else [])
+    if layout_old and not args.dry_run:
+        hits = old_path_references(root)
+        if hits:
+            elenco = ", ".join(f"{rel} ({n})" for rel, n in hits[:12])
+            problemi.append(
+                f"{len(hits)} file versionati citano ancora i vecchi percorsi (scripts/..., "
+                f"docs/context, agent_docs_guide): {elenco}"
+                + (" ..." if len(hits) > 12 else "")
+                + ".\n     Aggiornali. I piani e le specifiche storici non si riscrivono.")
     # L'elenco si stampa UNA volta, dentro il prompt: e' li' che serve, perche' il prompt
     # e' cio' che si copia all'agente. Qui sopra resta solo l'avviso che c'e'.
     if not args.dry_run:
@@ -1561,10 +1869,12 @@ def main() -> int:
     print("=" * 74)
     taratura = ("parte con quanto migrato dal lint precedente: va controllata"
                 if (migrated or excluded) and CONFIG_FILE in w.written
+                else "e' quella che c'era gia': non e' stata toccata"
+                if CONFIG_FILE in w.protected
                 else "parte vuota di\nproposito")
     print(f"""
 Non devi ritarare niente a mano. Dove sta il codice lo rilevano il lint e gli hook a
-ogni esecuzione. La taratura di dominio sta in docs/context/config.toml, {taratura}
+ogni esecuzione. La taratura di dominio sta in .keep-fresh/config.toml, {taratura}
 e si completa guardando i falsi positivi del primo giro di lint: e' gia'
 chiesto nel prompt qui sotto.
 
@@ -1575,6 +1885,9 @@ chiesto nel prompt qui sotto.
     if precedente:
         print()
         print(PROMPT_UPGRADE.replace("<python>", interp))
+    if layout_old:
+        print()
+        print(PROMPT_LAYOUT)
     if problemi:
         print()
         print("Inoltre l'inizializzatore ha lasciato aperti questi punti, sistemali:")
@@ -1587,7 +1900,7 @@ chiesto nel prompt qui sotto.
         print(f"     {agent['label']}: {agent['steps']}.")
     print("""
 3. Quando l'agente ha finito, verifica tu:
-     <python> scripts/docs_lint.py        deve uscire senza errori
+     <python> .keep-fresh/scripts/docs_lint.py   deve uscire senza errori
      git log --oneline -5                 cosa ha committato
    e che gli hook girino davvero: apri una sessione nuova e guarda
      .git/agent-hooks.log                 una riga per ogni esecuzione, con l'agente
@@ -1604,7 +1917,67 @@ if __name__ == "__main__":
 
 
 # ==== PAYLOAD (rigenerabile con --pack, non modificare a mano) ====
-# ---- AGENT-CONTEXT-FILE: docs/agent_docs_guide.md ----
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/config.toml ----
+# # Configurazione del contesto per agenti.
+# #
+# # Questo file e' TUO. L'inizializzatore lo crea se manca e non lo sovrascrive mai,
+# # nemmeno con --force: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
+# # script non deve cancellarla.
+# #
+# # Dove sta il codice NON si scrive qui. Il lint e gli hook lo rilevano a ogni
+# # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
+# # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
+# # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
+# #     <python> scripts/docs_lint.py   (python3 su macOS/Linux)
+# # Qui si correggono solo gli errori di quella rilevazione.
+#
+# [code]
+# # Percorsi, relativi alla radice, da considerare codice anche se la rilevazione li
+# # scarta: una directory che inizia con un punto, file senza estensione riconosciuta.
+# include = []
+# # Percorsi da NON considerare codice anche se la rilevazione li prende: codice
+# # generato, copie di librerie esterne.
+# exclude = []
+#
+# [context]
+# # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
+# # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
+# # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
+# # pesa davvero in token lo misura: <python> scripts/context_cost.py
+# max_injection_chars = 8000
+# # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
+# # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
+# # volta e dice quanto costa riprendere. Reinviato, il messaggio passa.
+# resume_warn_tokens = 100000
+# # Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
+# resume_cache_minutes = 60
+#
+# # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
+# # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
+# # motivo non si aggiunge niente, o in sei mesi queste liste sono una discarica che
+# # silenzia anche i controlli veri.
+#
+# [lint.not_symbols]
+# # Parole fra backtick nei documenti che sembrano identificatori ma sono prosa, unita' di
+# # misura o nomi esterni. Il confronto ignora maiuscole e minuscole.
+# # "parola" = "perche' non e' un simbolo"
+#
+# [lint.expected_absent]
+# # Nomi citati nei documenti che NON devono esistere nel codice, per costruzione: un
+# # identificatore ritirato, un modulo rimosso, il nome di un altro repository.
+# # "NOME_RITIRATO" = "perche' non deve esistere"
+#
+# [lint.external_symbols]
+# # Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
+# # Una chiave che finisce con "/" vale come prefisso di percorso.
+# # "API_DELLA_LIBRERIA" = "di quale libreria, e perche' e' citata"
+#
+# [lint.received_docs]
+# # Documenti ricevuti da terzi e conservati verbatim: il lint non ne controlla i link,
+# # che puntano nel workspace di chi li ha scritti. Si indicano per nome di file.
+# # "nome-file.md" = "da chi, e perche' e' conservato cosi'"
+#
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/guide.md ----
 # # Istruzioni per l'agente — creare il contesto di progetto
 #
 # Sei stato incaricato di organizzare la documentazione per gli agenti AI di questo
@@ -1626,7 +1999,7 @@ if __name__ == "__main__":
 # ```
 # AGENTS.md            ingresso canonico: cos'è il progetto + tabelle di rotta
 # CLAUDE.md            poche righe: rinvio + import verso AGENTS.md (solo se si usa Claude Code)
-# docs/context/        contesto per l'agente
+# docs/keep-fresh/context/   contesto per l'agente: lo scrivi tu, lo leggono gli agenti
 #   invariants.md      regole inviolabili: regola | dove vive | link al perché
 #   conventions.md     nomi, unità, scelte lessicali, cosa non si rinomina
 #   development.md     build, test, release, comandi di verifica
@@ -1636,12 +2009,14 @@ if __name__ == "__main__":
 #   status.md          stato corrente, difetti aperti, registro di collaudo, cronologia
 # docs/                documentazione dell'applicazione, per le persone
 #
-# docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
-#
-# scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
-# scripts/agent_hooks.py       hook di avvio, di fine turno e di ripresa, uguali per ogni agente
-# scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
-# scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
+# .keep-fresh/         la meccanica: la installa l'inizializzatore, non la scrivi tu
+#   config.toml        taratura a mano del lint: eccezioni, correzioni alla rilevazione
+#   guide.md           questa guida
+#   version.json       quale versione dell'inizializzatore ha scritto questi file
+#   scripts/docs_lint.py     IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
+#   scripts/agent_hooks.py   hook di avvio, di fine turno e di ripresa, uguali per ogni agente
+#   scripts/context_core.py  comune a lint e hook: dove sta il codice, marcatori
+#   scripts/context_cost.py  quanto pesa il contesto: sessioni misurate, misura esatta
 #
 # aggancio degli hook, NON versionato, uno per agente e per macchina:
 # .claude/settings.local.json  Claude Code
@@ -1668,8 +2043,8 @@ if __name__ == "__main__":
 # Windows, `python3` su macOS e Linux (lì `python` di solito non esiste). Sostituiscilo tu
 # quando lanci un comando; non riscrivere la guida per farlo.
 #
-# Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
-# guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
+# Crea in `.keep-fresh/` il lint, gli hook, il modulo comune, questa guida e una
+# `config.toml` vuota; crea lo scheletro di `status.md` in `docs/keep-fresh/context/`; e aggancia gli hook nel file
 # locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
 # per la macchina** (`python` su Windows, `python3` altrove). Il comando non contiene
 # percorsi: la radice del repository la trova git a ogni esecuzione, quindi spostare la
@@ -1689,15 +2064,15 @@ if __name__ == "__main__":
 # locali di un clone non trovano niente da eseguire; senza i secondi, chi clona non ha il
 # contesto:
 #
-# - gli strumenti: `scripts/docs_lint.py`, `scripts/context_core.py`, `scripts/agent_hooks.py`,
-#   `scripts/context_cost.py`, `scripts/agent_context_version.json`, questa guida e `.gitignore`;
-# - il contesto: `docs/context/status.md`, `docs/context/config.toml`, `AGENTS.md`, `CLAUDE.md`
-#   e i documenti in `docs/`.
+# - la meccanica: tutta `.keep-fresh/` (script, `config.toml`, `version.json`, questa guida)
+#   e `.gitignore`;
+# - il contesto: tutta `docs/keep-fresh/context/` (compreso `status.md`), `AGENTS.md`,
+#   `CLAUDE.md` e i documenti in `docs/`.
 #
 # Restano **fuori** da git i due file di aggancio, `.claude/settings.local.json` e
 # `.codex/hooks.json`: contengono il nome dell'interprete della macchina, e `.gitignore` li
 # esclude già. Se il repository verrà clonato su altre macchine, chiedi all'utente se vuole
-# versionare anche una copia di `agent_context_init.py`, in `scripts/` e non nella radice:
+# versionare anche una copia di `agent_context_init.py`, in `.keep-fresh/` e non nella radice:
 # serve a rilanciarlo dopo ogni clone. La copia va tenuta uguale alla fonte e sostituita a
 # ogni aggiornamento.
 #
@@ -1729,10 +2104,20 @@ if __name__ == "__main__":
 #
 # **Aggiornare un repo gia' inizializzato**: `--force` riscrive i file **gestiti** — lint,
 # modulo comune, hook, guida — alla versione di riferimento, e **non tocca mai** i file
-# **seme**, `docs/context/status.md` e `docs/context/config.toml`, che dal primo giorno
+# **seme**, `docs/keep-fresh/context/status.md` e `.keep-fresh/config.toml`, che dal primo giorno
 # contengono lavoro umano. La distinzione fra file gestiti e file seme e' quella che rende
 # `--force` sicuro da usare: senza, aggiornare uno script significherebbe cancellare lo
 # stato del progetto o la taratura, e nessuno lo farebbe mai.
+#
+# **Da un repo col layout precedente** (script in `scripts/`, contesto in `docs/context/`,
+# guida in `docs/`): `--force` lo **migra**, e senza `--force` si rifiuta e non scrive
+# niente. Sposta con `git mv`, così la storia dei file resta: `docs/context/` diventa
+# `docs/keep-fresh/context/`, `docs/context/config.toml` diventa `.keep-fresh/config.toml`.
+# Toglie i vecchi script gestiti e riscrive l'aggancio degli hook. Non tocca gli altri file
+# di `scripts/`. Resta da fare a te un lavoro che lo script non sa fare: i documenti che
+# citano ancora i vecchi percorsi. Il lint segnala quelli sotto `docs/keep-fresh/context/`;
+# `AGENTS.md`, `CLAUDE.md` e il resto li trovi con `git grep`. I piani e le specifiche
+# storici descrivono il passato: **non si riscrivono**.
 #
 # E' il caso che si presenta subito: un repo dove la guida era stata copiata a mano tempo
 # prima ha una versione superata proprio del file che dice all'agente cosa fare. Va
@@ -1746,7 +2131,7 @@ if __name__ == "__main__":
 # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Un progetto che nasce
 # vuoto, cresce o si riorganizza resta sorvegliato senza toccare niente. Il lint stampa cosa
 # ha rilevato nel controllo 0: se sbaglia, si corregge con `[code] include` ed `exclude` in
-# `docs/context/config.toml`, non modificando gli script.
+# `.keep-fresh/config.toml`, non modificando gli script.
 #
 # Restano vuote di proposito le tabelle `[lint.not_symbols]`, `[lint.expected_absent]`,
 # `[lint.external_symbols]` e `[lint.received_docs]` di `config.toml`: sono lavoro di
@@ -1761,10 +2146,10 @@ if __name__ == "__main__":
 # **Come chiederlo all'agente.** L'inizializzatore stampa il prompt, ed è questo. Due frasi
 # cambiano l'esito, e vanno messe entrambe:
 #
-# > Leggi `docs/agent_docs_guide.md` ed eseguilo su questo repository. **Sono istruzioni
+# > Leggi `.keep-fresh/guide.md` ed eseguilo su questo repository. **Sono istruzioni
 # > operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
 # > quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
-# > codice, verifiche fatte a mano. In `scripts/` trovi già il lint e gli hook
+# > codice, verifiche fatte a mano. In `.keep-fresh/scripts/` trovi già il lint e gli hook
 # > e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
 # > solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
 #
@@ -1775,12 +2160,12 @@ if __name__ == "__main__":
 #
 # ## Le due categorie, da tenere separate
 #
-# - **`docs/context/` è per l'agente**: come si lavora *su* questo progetto — struttura,
-#   scelte e perché, vincoli, stato del lavoro.
+# - **`docs/keep-fresh/context/` è per l'agente**: come si lavora *su* questo progetto —
+#   struttura, scelte e perché, vincoli, stato del lavoro.
 # - **`docs/` è per le persone**: come si comporta il prodotto verso l'esterno, per chi lo
 #   integra o ne manutiene il protocollo.
 #
-# Se un documento serve a entrambi sta in `docs/`, e `docs/context/` ci mette un link.
+# Se un documento serve a entrambi sta in `docs/`, e `docs/keep-fresh/context/` ci mette un link.
 # **Una sola copia, sempre**: due copie divergono e nessuno sa quale vale.
 #
 # ## Da dove prendi il contenuto
@@ -2010,7 +2395,7 @@ if __name__ == "__main__":
 # | # | Controllo | Cosa intercetta |
 # |---|---|---|
 # | 1 | **Feature bandite** | un simbolo vietato tornato nell'albero. Lista letta da `invariants.md`, non duplicata |
-# | 2 | **Identificatori** | un simbolo o percorso citato fra backtick in `docs/context/` che non esiste più |
+# | 2 | **Identificatori** | un simbolo o percorso citato fra backtick in `docs/keep-fresh/context/` che non esiste più |
 # | 3 | **Evidenza** | un *verificato* senza data, o il lessico conversazionale entrato in un documento |
 # | 4 | **Link e ancore** | un rimando o un'ancora che non risolve |
 # | 5 | **Freschezza** | quanti commit hanno toccato il codice dopo il marcatore `context-verified-at` |
@@ -2051,7 +2436,7 @@ if __name__ == "__main__":
 # dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 #
 # Gli **script** degli hook sono versionati e **uguali per ogni agente**
-# (`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
+# (`.keep-fresh/scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
 # il nome dell'interprete, che cambia da macchina a macchina, quindi sta nella
 # configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
 # ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
@@ -2117,8 +2502,8 @@ if __name__ == "__main__":
 # ### 3. La misura dei consumi — quanto pesa davvero il contesto
 #
 # ```
-# <python> scripts/context_cost.py            resoconto: niente chiamate al modello
-# <python> scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+# <python> .keep-fresh/scripts/context_cost.py            resoconto: niente chiamate al modello
+# <python> .keep-fresh/scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
 # ```
 #
 # Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i
@@ -2289,75 +2674,15 @@ if __name__ == "__main__":
 # di dichiarare concluso qualcosa**, e quando trova qualcosa si corregge il documento, non si
 # allarga l'eccezione.
 #
-# ---- AGENT-CONTEXT-FILE: docs/context/config.toml ----
-# # Configurazione del contesto per agenti.
-# #
-# # Questo file e' TUO. L'inizializzatore lo crea se manca e non lo sovrascrive mai,
-# # nemmeno con --force: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
-# # script non deve cancellarla.
-# #
-# # Dove sta il codice NON si scrive qui. Il lint e gli hook lo rilevano a ogni
-# # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
-# # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
-# # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
-# #     <python> scripts/docs_lint.py   (python3 su macOS/Linux)
-# # Qui si correggono solo gli errori di quella rilevazione.
-#
-# [code]
-# # Percorsi, relativi alla radice, da considerare codice anche se la rilevazione li
-# # scarta: una directory che inizia con un punto, file senza estensione riconosciuta.
-# include = []
-# # Percorsi da NON considerare codice anche se la rilevazione li prende: codice
-# # generato, copie di librerie esterne.
-# exclude = []
-#
-# [context]
-# # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
-# # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
-# # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
-# # pesa davvero in token lo misura: <python> scripts/context_cost.py
-# max_injection_chars = 8000
-# # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
-# # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
-# # volta e dice quanto costa riprendere. Reinviato, il messaggio passa.
-# resume_warn_tokens = 100000
-# # Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
-# resume_cache_minutes = 60
-#
-# # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
-# # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
-# # motivo non si aggiunge niente, o in sei mesi queste liste sono una discarica che
-# # silenzia anche i controlli veri.
-#
-# [lint.not_symbols]
-# # Parole fra backtick nei documenti che sembrano identificatori ma sono prosa, unita' di
-# # misura o nomi esterni. Il confronto ignora maiuscole e minuscole.
-# # "parola" = "perche' non e' un simbolo"
-#
-# [lint.expected_absent]
-# # Nomi citati nei documenti che NON devono esistere nel codice, per costruzione: un
-# # identificatore ritirato, un modulo rimosso, il nome di un altro repository.
-# # "NOME_RITIRATO" = "perche' non deve esistere"
-#
-# [lint.external_symbols]
-# # Simboli che esistono, ma in una libreria o in un framework, non in questo albero.
-# # Una chiave che finisce con "/" vale come prefisso di percorso.
-# # "API_DELLA_LIBRERIA" = "di quale libreria, e perche' e' citata"
-#
-# [lint.received_docs]
-# # Documenti ricevuti da terzi e conservati verbatim: il lint non ne controlla i link,
-# # che puntano nel workspace di chi li ha scritti. Si indicano per nome di file.
-# # "nome-file.md" = "da chi, e perche' e' conservato cosi'"
-#
-# ---- AGENT-CONTEXT-FILE: scripts/agent_hooks.py ----
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/scripts/agent_hooks.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
 # """
 # agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
 #
-#     <python> scripts/agent_hooks.py session-start --agent <nome>
-#     <python> scripts/agent_hooks.py stop          --agent <nome>
-#     <python> scripts/agent_hooks.py prompt        --agent <nome>
+#     <python> .keep-fresh/scripts/agent_hooks.py session-start --agent <nome>
+#     <python> .keep-fresh/scripts/agent_hooks.py stop          --agent <nome>
+#     <python> .keep-fresh/scripts/agent_hooks.py prompt        --agent <nome>
 #
 # Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 # parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -2455,7 +2780,7 @@ if __name__ == "__main__":
 #
 # def session_start(data: dict) -> int:
 #     if core is None:
-#         log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
+#         log("SessionStart", ".keep-fresh/scripts/context_core.py non trovato: niente da iniettare")
 #         return 0
 #     root = core.repo_root()
 #     if root is None:
@@ -2468,7 +2793,7 @@ if __name__ == "__main__":
 #
 #     text = inj["text"]
 #     print(text)
-#     # Il formato di questa riga lo legge scripts/context_cost.py: "iniettati N caratteri".
+#     # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
 #     ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
 #                if inj["reduced"] else "")
 #     log("SessionStart", f"iniettati {len(text)} caratteri "
@@ -2493,7 +2818,7 @@ if __name__ == "__main__":
 #
 # def stop(data: dict) -> int:
 #     if core is None:
-#         log("Stop", "scripts/context_core.py non trovato: nessun controllo")
+#         log("Stop", ".keep-fresh/scripts/context_core.py non trovato: nessun controllo")
 #         return 0
 #     # L'agente ha gia' continuato una volta per un hook di fine turno: non si insiste.
 #     if data.get("stop_hook_active") is True:
@@ -2633,7 +2958,7 @@ if __name__ == "__main__":
 #         code = 0
 #     sys.exit(0 if code is None else code)
 #
-# ---- AGENT-CONTEXT-FILE: scripts/context_core.py ----
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/scripts/context_core.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
 # """
@@ -2642,7 +2967,7 @@ if __name__ == "__main__":
 # Risponde a tre domande, sempre nello stesso modo per chiunque le faccia:
 #
 #   - dove sta il codice di questo repository;
-#   - cosa dice la configurazione scritta a mano (docs/context/config.toml);
+#   - cosa dice la configurazione scritta a mano (.keep-fresh/config.toml);
 #   - a che commit status.md dichiara di essere riconciliato, e cosa e' cambiato da allora.
 #
 # Dove sta il codice NON e' scritto da nessuna parte: si rileva a ogni esecuzione dai file
@@ -2666,9 +2991,12 @@ if __name__ == "__main__":
 # # devono dire un comando che qui funziona.
 # PY = "python" if sys.platform == "win32" else "python3"
 #
-# CONTEXT_DIR = "docs/context"
-# STATUS_FILE = "docs/context/status.md"
-# CONFIG_FILE = "docs/context/config.toml"
+# # L'impianto sta in due posti: la meccanica (script, taratura, guida) in TOOL_DIR, il
+# # contesto scritto dall'agente (stato e documenti) in CONTEXT_DIR.
+# TOOL_DIR = ".keep-fresh"
+# CONTEXT_DIR = "docs/keep-fresh/context"
+# STATUS_FILE = CONTEXT_DIR + "/status.md"
+# CONFIG_FILE = TOOL_DIR + "/config.toml"
 #
 # # I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
 # EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
@@ -2676,8 +3004,9 @@ if __name__ == "__main__":
 # # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
 # # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # # i nomi che il lint cerca.
-# MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
-#                  "scripts/context_cost.py", "scripts/agent_context_version.json"}
+# MANAGED_FILES = {TOOL_DIR + "/scripts/docs_lint.py", TOOL_DIR + "/scripts/context_core.py",
+#                  TOOL_DIR + "/scripts/agent_hooks.py", TOOL_DIR + "/scripts/context_cost.py",
+#                  TOOL_DIR + "/version.json"}
 # # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 # MANAGED_NAMES = {"agent_context_init.py"}
 #
@@ -2935,7 +3264,7 @@ if __name__ == "__main__":
 #
 # # Il tetto, in caratteri, dei blocchi session-start che l'hook inietta per intero. E' in
 # # caratteri perche' l'hook non ha un tokenizer. Quanti token valgano davvero lo misura
-# # scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
+# # .keep-fresh/scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
 # # impianto un token ha fatto da 1,9 a 2,3 caratteri (stima dalle sessioni, 2026-09-26).
 # DEFAULT_INJECTION_BUDGET = 8000
 # # Nell'indice, la prima riga di ogni voce si taglia qui: basta a riconoscerla.
@@ -2992,7 +3321,7 @@ if __name__ == "__main__":
 #     budget = injection_budget(cfg)
 #
 #     out = [
-#         "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
+#         "=== Stato del progetto (iniettato da .keep-fresh/scripts/agent_hooks.py) ===",
 #         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, leggi in quel file la "
 #         f"sezione che ti serve, non il file intero.",
 #         "",
@@ -3010,7 +3339,7 @@ if __name__ == "__main__":
 #                    f"{blocks_chars} caratteri, oltre il tetto di {budget}. Qui sotto c'e' "
 #                    f"solo il loro indice: leggi nel file le voci che ti servono. Se lavori "
 #                    f"su {STATUS_FILE}, riporta i blocchi sotto il tetto (vedi "
-#                    f"docs/agent_docs_guide.md).")
+#                    f".keep-fresh/guide.md).")
 #         out.append("")
 #         out.append(index_of(blocks))
 #     else:
@@ -3041,7 +3370,7 @@ if __name__ == "__main__":
 #                    f"precedente mai registrato: valuta se va annotato.")
 #
 #     out += ["", "Verifica che i documenti dicano ancora il vero: "
-#                 f"{PY} scripts/docs_lint.py",
+#                 f"{PY} .keep-fresh/scripts/docs_lint.py",
 #             "=== fine stato del progetto ==="]
 #     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
 #             "reduced": reduced, "levels": levels}
@@ -3217,17 +3546,17 @@ if __name__ == "__main__":
 #               f"ripresa in {STATUS_FILE}."]
 #     return "\n".join(lines), call
 #
-# ---- AGENT-CONTEXT-FILE: scripts/context_cost.py ----
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/scripts/context_cost.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
 # """
 # context_cost — quanto pesa il contesto di questo repository, misurato.
 #
-#     <python> scripts/context_cost.py                resoconto; non chiama nessun modello
-#     <python> scripts/context_cost.py misura         misura ESATTA dei token che questo
+#     <python> .keep-fresh/scripts/context_cost.py                resoconto; non chiama nessun modello
+#     <python> .keep-fresh/scripts/context_cost.py misura         misura ESATTA dei token che questo
 #                                                   impianto aggiunge a ogni sessione
-#     <python> scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
-#     <python> scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
+#     <python> .keep-fresh/scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
+#     <python> .keep-fresh/scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
 #                                                   (il vecchio percorso di un repo spostato)
 #
 # Ogni numero dice da dove viene:
@@ -3717,10 +4046,10 @@ if __name__ == "__main__":
 #     elif measure:
 #         print(f"  L'ultima misura ({measure['date']}) e' di contenuti diversi da quelli di "
 #               f"oggi: token stimati con il suo rapporto, {cpt:.2f} caratteri/token.")
-#         print(f"  Per il valore esatto: {core.PY} scripts/context_cost.py misura")
+#         print(f"  Per il valore esatto: {core.PY} .keep-fresh/scripts/context_cost.py misura")
 #     else:
 #         print(f"  Token stimati a {cpt:.2f} caratteri/token ({cpt_src}).")
-#         print(f"  Per il valore esatto: {core.PY} scripts/context_cost.py misura")
+#         print(f"  Per il valore esatto: {core.PY} .keep-fresh/scripts/context_cost.py misura")
 #
 #     # 2. Sessioni Claude Code
 #     print("\n2. SESSIONI DI CLAUDE CODE (trascrizioni in "
@@ -3930,7 +4259,7 @@ if __name__ == "__main__":
 #                     help="conta anche le sessioni aperte in questa cartella")
 #     ap.add_argument("--json", action="store_true", help="uscita per programmi")
 #     a = ap.parse_args(argv)
-#     root = core.repo_root() or Path(__file__).resolve().parent.parent
+#     root = core.repo_root() or Path(__file__).resolve().parent.parent.parent
 #     if a.comando == "misura":
 #         return measure(Path(root))
 #     return report(Path(root), a.anche, a.giorni, a.json)
@@ -3939,7 +4268,7 @@ if __name__ == "__main__":
 # if __name__ == "__main__":
 #     sys.exit(main())
 #
-# ---- AGENT-CONTEXT-FILE: scripts/docs_lint.py ----
+# ---- AGENT-CONTEXT-FILE: .keep-fresh/scripts/docs_lint.py ----
 # #!/usr/bin/env python3
 # # -*- coding: utf-8 -*-
 # """
@@ -3949,13 +4278,13 @@ if __name__ == "__main__":
 #
 # Sei controlli:
 #
-#   1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
+#   1. FEATURE BANDITE  — i simboli elencati in docs/keep-fresh/context/invariants.md non sono
 #                         ricomparsi nel codice. La lista NON e' scritta qui: viene
 #                         letta dal documento, che resta l'unica fonte.
-#   2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/context/
+#   2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/keep-fresh/context/
 #                         esiste ancora nell'albero. E' il controllo che intercetta
 #                         una rinomina fatta senza aggiornare i documenti.
-#   3. EVIDENZA         — in docs/context/ ogni "verificato" porta una data, e il
+#   3. EVIDENZA         — in docs/keep-fresh/context/ ogni "verificato" porta una data, e il
 #                         lessico conversazionale ([Certo]/[Probabile]/[Ipotesi]) non
 #                         entra nei documenti. Stampa il cruscotto dei tre livelli.
 #   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
@@ -3965,10 +4294,10 @@ if __name__ == "__main__":
 #                         sessione. Avvisa se i blocchi session-start superano il tetto
 #                         di config.toml: in quel caso l'hook inietta solo l'indice.
 #
-# Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
-# esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
+# Dove sta il codice non e' scritto qui: lo rileva .keep-fresh/scripts/context_core.py a ogni
+# esecuzione. Le eccezioni scritte a mano stanno in .keep-fresh/config.toml.
 #
-# Uso:   <python> scripts/docs_lint.py [--quiet]
+# Uso:   <python> .keep-fresh/scripts/docs_lint.py [--quiet]
 # Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 # """
 #
@@ -3987,7 +4316,7 @@ if __name__ == "__main__":
 #
 # # --------------------------------------------------------------------------- setup
 #
-# ROOT = core.repo_root() or Path(__file__).resolve().parent.parent
+# ROOT = core.repo_root() or Path(__file__).resolve().parent.parent.parent
 # CONTEXT = ROOT / core.CONTEXT_DIR
 # CONFIG, CONFIG_ERROR = core.load_config(ROOT)
 #
@@ -4104,12 +4433,12 @@ if __name__ == "__main__":
 #     if not inv.is_file():
 #         # Progetto appena inizializzato: gli invarianti non sono ancora stati scritti.
 #         # E' un lavoro da fare, non un guasto.
-#         rep.warn("BANDITE", "docs/context/invariants.md non esiste ancora: "
+#         rep.warn("BANDITE", "docs/keep-fresh/context/invariants.md non esiste ancora: "
 #                             "il controllo 1 e' inattivo finche' non c'e'")
 #         return
 #     text = read(inv)
 #     if not text:
-#         rep.error("BANDITE", "docs/context/invariants.md esiste ma non e' leggibile")
+#         rep.error("BANDITE", "docs/keep-fresh/context/invariants.md esiste ma non e' leggibile")
 #         return
 #
 #     m = re.search(r"##\s*Feature bandite\s*\n(.*?)(?=\n##\s|\Z)", text, re.S)
@@ -4163,7 +4492,7 @@ if __name__ == "__main__":
 # def path_exists_anywhere(rel: str) -> bool:
 #     """
 #     Un documento puo' citare un file per nome senza il percorso completo: `foo.md`
-#     che sta in docs/, mentre chi lo cita e' in docs/context/. Cercarlo solo dalla
+#     che sta in docs/, mentre chi lo cita e' in docs/keep-fresh/context/. Cercarlo solo dalla
 #     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
 #     sono il modo in cui un lint smette di essere letto. Regge anche i glob (`lib/*.h`).
 #     """
@@ -4288,10 +4617,10 @@ if __name__ == "__main__":
 #                           f"{p.name}:{n} — [{m.group(1)}] e' il lessico della "
 #                           f"conversazione: nei documenti si usa "
 #                           f"verificato/dedotto/assunto")
-#     rep.note("  cruscotto evidenza in docs/context/:  " +
+#     rep.note("  cruscotto evidenza in docs/keep-fresh/context/:  " +
 #              "  ".join(f"{lvl}={counts[lvl]}" for lvl in LEVELS))
 #     if counts["verificato"] == 0:
-#         rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/context/")
+#         rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/keep-fresh/context/")
 #
 #
 # # ---------------------------------------------------------------- 4. link e ancore
@@ -4374,7 +4703,7 @@ if __name__ == "__main__":
 #     status = CONTEXT / "status.md"
 #     text = read(status)
 #     if not text:
-#         rep.error("FRESCHEZZA", "docs/context/status.md non esiste o non e' leggibile")
+#         rep.error("FRESCHEZZA", "docs/keep-fresh/context/status.md non esiste o non e' leggibile")
 #         return
 #     sha = core.read_marker(text)
 #     if not sha:
@@ -4432,7 +4761,7 @@ if __name__ == "__main__":
 #         if p.is_file():
 #             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
 #                      f"(piu' cio' che importa)")
-#     rep.note(f"  i token veri: {core.PY} scripts/context_cost.py")
+#     rep.note(f"  i token veri: {core.PY} .keep-fresh/scripts/context_cost.py")
 #
 #
 # CHECKS = [

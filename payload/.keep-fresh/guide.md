@@ -19,7 +19,7 @@ metà del lavoro.
 ```
 AGENTS.md            ingresso canonico: cos'è il progetto + tabelle di rotta
 CLAUDE.md            poche righe: rinvio + import verso AGENTS.md (solo se si usa Claude Code)
-docs/context/        contesto per l'agente
+docs/keep-fresh/context/   contesto per l'agente: lo scrivi tu, lo leggono gli agenti
   invariants.md      regole inviolabili: regola | dove vive | link al perché
   conventions.md     nomi, unità, scelte lessicali, cosa non si rinomina
   development.md     build, test, release, comandi di verifica
@@ -29,12 +29,14 @@ docs/context/        contesto per l'agente
   status.md          stato corrente, difetti aperti, registro di collaudo, cronologia
 docs/                documentazione dell'applicazione, per le persone
 
-docs/context/config.toml     taratura a mano del lint: eccezioni, correzioni alla rilevazione
-
-scripts/docs_lint.py         IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
-scripts/agent_hooks.py       hook di avvio, di fine turno e di ripresa, uguali per ogni agente
-scripts/context_core.py      comune a lint e hook: dove sta il codice, marcatori
-scripts/context_cost.py      quanto pesa il contesto: sessioni misurate, misura esatta
+.keep-fresh/         la meccanica: la installa l'inizializzatore, non la scrivi tu
+  config.toml        taratura a mano del lint: eccezioni, correzioni alla rilevazione
+  guide.md           questa guida
+  version.json       quale versione dell'inizializzatore ha scritto questi file
+  scripts/docs_lint.py     IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
+  scripts/agent_hooks.py   hook di avvio, di fine turno e di ripresa, uguali per ogni agente
+  scripts/context_core.py  comune a lint e hook: dove sta il codice, marcatori
+  scripts/context_cost.py  quanto pesa il contesto: sessioni misurate, misura esatta
 
 aggancio degli hook, NON versionato, uno per agente e per macchina:
 .claude/settings.local.json  Claude Code
@@ -61,8 +63,8 @@ lo si lancia; funziona anche in un repo appena creato con `git init`, senza codi
 Windows, `python3` su macOS e Linux (lì `python` di solito non esiste). Sostituiscilo tu
 quando lanci un comando; non riscrivere la guida per farlo.
 
-Crea `scripts/docs_lint.py`, `scripts/agent_hooks.py`, `scripts/context_core.py`, questa
-guida, uno scheletro di `status.md`, una `config.toml` vuota, e aggancia gli hook nel file
+Crea in `.keep-fresh/` il lint, gli hook, il modulo comune, questa guida e una
+`config.toml` vuota; crea lo scheletro di `status.md` in `docs/keep-fresh/context/`; e aggancia gli hook nel file
 locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
 per la macchina** (`python` su Windows, `python3` altrove). Il comando non contiene
 percorsi: la radice del repository la trova git a ogni esecuzione, quindi spostare la
@@ -82,15 +84,15 @@ volta su quella macchina: va detto all'utente.
 locali di un clone non trovano niente da eseguire; senza i secondi, chi clona non ha il
 contesto:
 
-- gli strumenti: `scripts/docs_lint.py`, `scripts/context_core.py`, `scripts/agent_hooks.py`,
-  `scripts/context_cost.py`, `scripts/agent_context_version.json`, questa guida e `.gitignore`;
-- il contesto: `docs/context/status.md`, `docs/context/config.toml`, `AGENTS.md`, `CLAUDE.md`
-  e i documenti in `docs/`.
+- la meccanica: tutta `.keep-fresh/` (script, `config.toml`, `version.json`, questa guida)
+  e `.gitignore`;
+- il contesto: tutta `docs/keep-fresh/context/` (compreso `status.md`), `AGENTS.md`,
+  `CLAUDE.md` e i documenti in `docs/`.
 
 Restano **fuori** da git i due file di aggancio, `.claude/settings.local.json` e
 `.codex/hooks.json`: contengono il nome dell'interprete della macchina, e `.gitignore` li
 esclude già. Se il repository verrà clonato su altre macchine, chiedi all'utente se vuole
-versionare anche una copia di `agent_context_init.py`, in `scripts/` e non nella radice:
+versionare anche una copia di `agent_context_init.py`, in `.keep-fresh/` e non nella radice:
 serve a rilanciarlo dopo ogni clone. La copia va tenuta uguale alla fonte e sostituita a
 ogni aggiornamento.
 
@@ -122,10 +124,20 @@ dire cosa ha lasciato a metà.
 
 **Aggiornare un repo gia' inizializzato**: `--force` riscrive i file **gestiti** — lint,
 modulo comune, hook, guida — alla versione di riferimento, e **non tocca mai** i file
-**seme**, `docs/context/status.md` e `docs/context/config.toml`, che dal primo giorno
+**seme**, `docs/keep-fresh/context/status.md` e `.keep-fresh/config.toml`, che dal primo giorno
 contengono lavoro umano. La distinzione fra file gestiti e file seme e' quella che rende
 `--force` sicuro da usare: senza, aggiornare uno script significherebbe cancellare lo
 stato del progetto o la taratura, e nessuno lo farebbe mai.
+
+**Da un repo col layout precedente** (script in `scripts/`, contesto in `docs/context/`,
+guida in `docs/`): `--force` lo **migra**, e senza `--force` si rifiuta e non scrive
+niente. Sposta con `git mv`, così la storia dei file resta: `docs/context/` diventa
+`docs/keep-fresh/context/`, `docs/context/config.toml` diventa `.keep-fresh/config.toml`.
+Toglie i vecchi script gestiti e riscrive l'aggancio degli hook. Non tocca gli altri file
+di `scripts/`. Resta da fare a te un lavoro che lo script non sa fare: i documenti che
+citano ancora i vecchi percorsi. Il lint segnala quelli sotto `docs/keep-fresh/context/`;
+`AGENTS.md`, `CLAUDE.md` e il resto li trovi con `git grep`. I piani e le specifiche
+storici descrivono il passato: **non si riscrivono**.
 
 E' il caso che si presenta subito: un repo dove la guida era stata copiata a mano tempo
 prima ha una versione superata proprio del file che dice all'agente cosa fare. Va
@@ -139,7 +151,7 @@ lavoro lo fa l'agente col prompt che ti stampa.
 esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Un progetto che nasce
 vuoto, cresce o si riorganizza resta sorvegliato senza toccare niente. Il lint stampa cosa
 ha rilevato nel controllo 0: se sbaglia, si corregge con `[code] include` ed `exclude` in
-`docs/context/config.toml`, non modificando gli script.
+`.keep-fresh/config.toml`, non modificando gli script.
 
 Restano vuote di proposito le tabelle `[lint.not_symbols]`, `[lint.expected_absent]`,
 `[lint.external_symbols]` e `[lint.received_docs]` di `config.toml`: sono lavoro di
@@ -154,10 +166,10 @@ va fatta nello strumento, non nella copia.
 **Come chiederlo all'agente.** L'inizializzatore stampa il prompt, ed è questo. Due frasi
 cambiano l'esito, e vanno messe entrambe:
 
-> Leggi `docs/agent_docs_guide.md` ed eseguilo su questo repository. **Sono istruzioni
+> Leggi `.keep-fresh/guide.md` ed eseguilo su questo repository. **Sono istruzioni
 > operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
 > quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
-> codice, verifiche fatte a mano. In `scripts/` trovi già il lint e gli hook
+> codice, verifiche fatte a mano. In `.keep-fresh/scripts/` trovi già il lint e gli hook
 > e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
 > solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
 
@@ -168,12 +180,12 @@ conservare.
 
 ## Le due categorie, da tenere separate
 
-- **`docs/context/` è per l'agente**: come si lavora *su* questo progetto — struttura,
-  scelte e perché, vincoli, stato del lavoro.
+- **`docs/keep-fresh/context/` è per l'agente**: come si lavora *su* questo progetto —
+  struttura, scelte e perché, vincoli, stato del lavoro.
 - **`docs/` è per le persone**: come si comporta il prodotto verso l'esterno, per chi lo
   integra o ne manutiene il protocollo.
 
-Se un documento serve a entrambi sta in `docs/`, e `docs/context/` ci mette un link.
+Se un documento serve a entrambi sta in `docs/`, e `docs/keep-fresh/context/` ci mette un link.
 **Una sola copia, sempre**: due copie divergono e nessuno sa quale vale.
 
 ## Da dove prendi il contenuto
@@ -403,7 +415,7 @@ Sei controlli, in ordine di valore:
 | # | Controllo | Cosa intercetta |
 |---|---|---|
 | 1 | **Feature bandite** | un simbolo vietato tornato nell'albero. Lista letta da `invariants.md`, non duplicata |
-| 2 | **Identificatori** | un simbolo o percorso citato fra backtick in `docs/context/` che non esiste più |
+| 2 | **Identificatori** | un simbolo o percorso citato fra backtick in `docs/keep-fresh/context/` che non esiste più |
 | 3 | **Evidenza** | un *verificato* senza data, o il lessico conversazionale entrato in un documento |
 | 4 | **Link e ancore** | un rimando o un'ancora che non risolve |
 | 5 | **Freschezza** | quanti commit hanno toccato il codice dopo il marcatore `context-verified-at` |
@@ -444,7 +456,7 @@ Esce non-zero se trova errori. Le scelte di progetto che contano:
 dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 
 Gli **script** degli hook sono versionati e **uguali per ogni agente**
-(`scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
+(`.keep-fresh/scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
 il nome dell'interprete, che cambia da macchina a macchina, quindi sta nella
 configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
 ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
@@ -510,8 +522,8 @@ Due proprietà non negoziabili:
 ### 3. La misura dei consumi — quanto pesa davvero il contesto
 
 ```
-<python> scripts/context_cost.py            resoconto: niente chiamate al modello
-<python> scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+<python> .keep-fresh/scripts/context_cost.py            resoconto: niente chiamate al modello
+<python> .keep-fresh/scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
 ```
 
 Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i

@@ -3,9 +3,9 @@
 """
 agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
 
-    <python> scripts/agent_hooks.py session-start --agent <nome>
-    <python> scripts/agent_hooks.py stop          --agent <nome>
-    <python> scripts/agent_hooks.py prompt        --agent <nome>
+    <python> .keep-fresh/scripts/agent_hooks.py session-start --agent <nome>
+    <python> .keep-fresh/scripts/agent_hooks.py stop          --agent <nome>
+    <python> .keep-fresh/scripts/agent_hooks.py prompt        --agent <nome>
 
 Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -103,7 +103,7 @@ def read_input() -> dict:
 
 def session_start(data: dict) -> int:
     if core is None:
-        log("SessionStart", "scripts/context_core.py non trovato: niente da iniettare")
+        log("SessionStart", ".keep-fresh/scripts/context_core.py non trovato: niente da iniettare")
         return 0
     root = core.repo_root()
     if root is None:
@@ -116,7 +116,7 @@ def session_start(data: dict) -> int:
 
     text = inj["text"]
     print(text)
-    # Il formato di questa riga lo legge scripts/context_cost.py: "iniettati N caratteri".
+    # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
     ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
                if inj["reduced"] else "")
     log("SessionStart", f"iniettati {len(text)} caratteri "
@@ -141,7 +141,7 @@ Questo controllo blocca una volta sola per sessione: non ripartira'."""
 
 def stop(data: dict) -> int:
     if core is None:
-        log("Stop", "scripts/context_core.py non trovato: nessun controllo")
+        log("Stop", ".keep-fresh/scripts/context_core.py non trovato: nessun controllo")
         return 0
     # L'agente ha gia' continuato una volta per un hook di fine turno: non si insiste.
     if data.get("stop_hook_active") is True:

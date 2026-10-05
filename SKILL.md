@@ -1,7 +1,7 @@
 ---
 name: keep-fresh
 disable-model-invocation: true
-description: Use when a git repository needs agent context set up, updated or repaired - no docs/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
+description: Use when a git repository needs agent context set up, updated or repaired - no docs/keep-fresh/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
 ---
 
 # keep-fresh
@@ -27,9 +27,12 @@ seguendo la guida che lo script installa.
 3. **Esegui davvero**, stesso comando senza `--dry-run`. Se il repository è già stato
    inizializzato e vuoi aggiornare lint, hook e guida, aggiungi `--force`
    (non tocca `status.md` né `config.toml`; poi guarda il `git diff`).
+   Se lo script risponde "layout precedente" e si rifiuta (exit 2), il repository ha gli
+   script in `scripts/` e il contesto in `docs/context/`: la migrazione **sposta file**.
+   Mostra all'utente la prova a vuoto e usa `--force` solo con il suo via libera.
 4. **Segui il prompt** che lo script stampa alla fine: dice come scrivere `AGENTS.md`,
-   `CLAUDE.md` e `docs/context/status.md` leggendo il repo e chiedendo all'utente ciò che
-   nel repo non c'è. La guida è anche in `docs/agent_docs_guide.md` del progetto.
+   `CLAUDE.md` e `docs/keep-fresh/context/status.md` leggendo il repo e chiedendo all'utente ciò che
+   nel repo non c'è. La guida è anche in `.keep-fresh/guide.md` del progetto.
 5. **Leggi la diagnosi** stampata dallo script: elenca ciò che ancora non funziona.
 
 Non committare e non fare push senza che l'utente lo chieda.

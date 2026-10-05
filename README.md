@@ -78,16 +78,21 @@ rilancia lo script una volta: lo aggiunge da solo, se `status.md` è ancora lo s
 
 ## Cosa scrive
 
+Due posti, di proposito. **`.keep-fresh/`** è la meccanica: script, taratura, guida, versione.
+La installa lo script, nessuno la scrive a mano, e si riconosce e si rimuove in un colpo
+solo. **`docs/keep-fresh/context/`** è il contesto: lo scrive l'agente, lo leggono gli
+agenti e le persone (`status.md`, `architecture.md`, `conventions.md`...).
+
 | Percorso | Categoria | Regola |
 |---|---|---|
-| `scripts/docs_lint.py` | gestito | scritto se manca; `--force` lo aggiorna |
-| `scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
-| `scripts/agent_hooks.py` | gestito | come sopra. Gli hook, uguali per ogni agente |
-| `scripts/context_cost.py` | gestito | come sopra. Quanto pesa il contesto, misurato |
-| `docs/agent_docs_guide.md` | gestito | come sopra. La guida che l'agente esegue |
-| `scripts/agent_context_version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
-| `docs/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
-| `docs/context/config.toml` | **seme** | come sopra. La taratura fatta a mano |
+| `.keep-fresh/scripts/docs_lint.py` | gestito | scritto se manca; `--force` lo aggiorna |
+| `.keep-fresh/scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
+| `.keep-fresh/scripts/agent_hooks.py` | gestito | come sopra. Gli hook, uguali per ogni agente |
+| `.keep-fresh/scripts/context_cost.py` | gestito | come sopra. Quanto pesa il contesto, misurato |
+| `.keep-fresh/guide.md` | gestito | come sopra. La guida che l'agente esegue |
+| `.keep-fresh/version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
+| `docs/keep-fresh/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
+| `.keep-fresh/config.toml` | **seme** | come sopra. La taratura fatta a mano |
 | `.claude/settings.local.json` | **fuso** | aggancio degli hook per Claude Code; lascia intatto il resto. Non tracciato da git |
 | `.codex/hooks.json` | **fuso** | aggancio degli hook per Codex, come sopra |
 | `.claude/settings.json` | ripulito | toccato solo per **togliere** i nostri hook, se una versione vecchia ce li aveva messi |
@@ -97,7 +102,7 @@ rilancia lo script una volta: lo aggiunge da solo, se `status.md` è ancora lo s
 `AGENTS.md` e `CLAUDE.md` non li scrive lo script: li scrive l'agente, perché dipendono da
 cosa c'è nel repository.
 
-## La taratura: `docs/context/config.toml`
+## La taratura: `.keep-fresh/config.toml`
 
 Il lint rileva il codice da solo e lo dice nel controllo 0. Se sbaglia, si corregge in
 `[code]`: `include` per percorsi che deve considerare codice (una directory che inizia con
@@ -118,12 +123,12 @@ Il file è un seme: nessun aggiornamento lo sovrascrive. Un repository inizializ
 del tetto non ha la sezione `[context]`: vale il tetto di partenza, e la si aggiunge a
 mano solo per cambiarlo.
 
-## Quanto pesa il contesto: `scripts/context_cost.py`
+## Quanto pesa il contesto: `.keep-fresh/scripts/context_cost.py`
 
 ```powershell
-python scripts/context_cost.py            # resoconto, non chiama nessun modello
-python scripts/context_cost.py misura     # misura esatta dei token fissi (circa $0,40)
-python scripts/context_cost.py --giorni 30 --anche C:\vecchio\percorso
+python .keep-fresh/scripts/context_cost.py            # resoconto, non chiama nessun modello
+python .keep-fresh/scripts/context_cost.py misura     # misura esatta dei token fissi (circa $0,40)
+python .keep-fresh/scripts/context_cost.py --giorni 30 --anche C:\vecchio\percorso
 ```
 
 Il resoconto legge le trascrizioni di Claude Code e i `token_count` di Codex delle sessioni
@@ -154,7 +159,7 @@ Ogni numero è marcato **[misurato]**, cioè registrato dall'agente o dalla misu
 
 ## Gli agenti
 
-Gli hook sono gli stessi per tutti gli agenti (`scripts/agent_hooks.py`), e sono tre:
+Gli hook sono gli stessi per tutti gli agenti (`.keep-fresh/scripts/agent_hooks.py`), e sono tre:
 
 - **all'avvio** (`SessionStart`) inietta lo stato del lavoro da `status.md`;
 - **a fine turno** (`Stop`) blocca una volta se il codice è cambiato e `status.md` no;
@@ -214,6 +219,33 @@ Aggiorna i file gestiti e non tocca i semi. Da una versione che teneva la taratu
 gli script, le liste di eccezioni vengono **migrate** in `config.toml` al primo giro, prima
 che `--force` riscriva il lint. Guarda comunque il `git diff` prima di committare.
 
+### Dal layout precedente (script in `scripts/`, contesto in `docs/context/`)
+
+Fino alla versione `3ada75c` gli script stavano in `scripts/`, la guida in `docs/` e il
+contesto in `docs/context/`. Un repository così **si rifiuta di migrare senza `--force`** e
+non scrive niente, perché la migrazione sposta dei file. Prima la prova a vuoto, poi vera:
+
+```powershell
+python agent_context_init.py --dry-run     # dice cosa sposterebbe
+python agent_context_init.py --force
+```
+
+Cosa fa: sposta `docs/context/` in `docs/keep-fresh/context/` e `docs/context/config.toml`
+in `.keep-fresh/config.toml`, con `git mv` (la storia dei file resta); toglie i vecchi file
+gestiti, ma solo se riconosce che sono i nostri; riscrive l'aggancio degli hook sul nuovo
+script. **Non tocca** gli altri file di `scripts/`, che nei progetti sono pieni di roba
+propria, né le copie dell'inizializzatore.
+
+Cosa **non** fa: riscrivere i documenti che citano ancora i vecchi percorsi. Li elenca fra i
+punti aperti del prompt finale, e li sistema l'agente. I piani e le specifiche storici non
+si riscrivono. Dopo la migrazione, `git status` mostra rinomine e cancellazioni già in
+indice: è voluto, il commit lo fai tu. Finché non committi, l'hook di fine turno non
+blocca, perché `status.md` risulta già toccato.
+
+Provato su Windows 11, Python 3.14.7, in repository finti usa e getta: layout generato con
+lo script del commit `093967c`, stato e taratura scritti a mano. Non provato su
+macOS/Linux, né sui progetti veri.
+
 Una differenza da conoscere: la versione vecchia sorvegliava solo le directory scritte nel
 lint (`CODE_DIRS`, `CODE_FILES`), mentre adesso il codice si rileva da solo. Quello che la
 rilevazione prende e il lint vecchio lasciava fuori finisce in `[code] exclude`, perché
@@ -241,7 +273,7 @@ Due copie con lo stesso hash installano gli stessi file.
 python agent_context_init.py --version
 ```
 
-L'inizializzazione registra il timbro in `scripts/agent_context_version.json` del
+L'inizializzazione registra il timbro in `.keep-fresh/version.json` del
 repository di destinazione. Quando rilanci lo script, la diagnosi confronta il
 **contenuto** dei file gestiti installati con quello della copia che stai usando, e se
 differiscono mostra le due versioni: se la tua è più recente, `--force` aggiorna. Se quei

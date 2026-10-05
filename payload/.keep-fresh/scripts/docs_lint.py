@@ -7,13 +7,13 @@ Non guarda il prodotto: guarda i documenti che lo descrivono.
 
 Sei controlli:
 
-  1. FEATURE BANDITE  — i simboli elencati in docs/context/invariants.md non sono
+  1. FEATURE BANDITE  — i simboli elencati in docs/keep-fresh/context/invariants.md non sono
                         ricomparsi nel codice. La lista NON e' scritta qui: viene
                         letta dal documento, che resta l'unica fonte.
-  2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/context/
+  2. IDENTIFICATORI   — ogni simbolo o percorso citato fra backtick in docs/keep-fresh/context/
                         esiste ancora nell'albero. E' il controllo che intercetta
                         una rinomina fatta senza aggiornare i documenti.
-  3. EVIDENZA         — in docs/context/ ogni "verificato" porta una data, e il
+  3. EVIDENZA         — in docs/keep-fresh/context/ ogni "verificato" porta una data, e il
                         lessico conversazionale ([Certo]/[Probabile]/[Ipotesi]) non
                         entra nei documenti. Stampa il cruscotto dei tre livelli.
   4. LINK E ANCORE    — ogni link markdown locale risolve, ancora compresa.
@@ -23,10 +23,10 @@ Sei controlli:
                         sessione. Avvisa se i blocchi session-start superano il tetto
                         di config.toml: in quel caso l'hook inietta solo l'indice.
 
-Dove sta il codice non e' scritto qui: lo rileva scripts/context_core.py a ogni
-esecuzione. Le eccezioni scritte a mano stanno in docs/context/config.toml.
+Dove sta il codice non e' scritto qui: lo rileva .keep-fresh/scripts/context_core.py a ogni
+esecuzione. Le eccezioni scritte a mano stanno in .keep-fresh/config.toml.
 
-Uso:   <python> scripts/docs_lint.py [--quiet]
+Uso:   <python> .keep-fresh/scripts/docs_lint.py [--quiet]
 Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 """
 
@@ -45,7 +45,7 @@ import context_core as core  # noqa: E402
 
 # --------------------------------------------------------------------------- setup
 
-ROOT = core.repo_root() or Path(__file__).resolve().parent.parent
+ROOT = core.repo_root() or Path(__file__).resolve().parent.parent.parent
 CONTEXT = ROOT / core.CONTEXT_DIR
 CONFIG, CONFIG_ERROR = core.load_config(ROOT)
 
@@ -162,12 +162,12 @@ def check_banned(rep: Report):
     if not inv.is_file():
         # Progetto appena inizializzato: gli invarianti non sono ancora stati scritti.
         # E' un lavoro da fare, non un guasto.
-        rep.warn("BANDITE", "docs/context/invariants.md non esiste ancora: "
+        rep.warn("BANDITE", "docs/keep-fresh/context/invariants.md non esiste ancora: "
                             "il controllo 1 e' inattivo finche' non c'e'")
         return
     text = read(inv)
     if not text:
-        rep.error("BANDITE", "docs/context/invariants.md esiste ma non e' leggibile")
+        rep.error("BANDITE", "docs/keep-fresh/context/invariants.md esiste ma non e' leggibile")
         return
 
     m = re.search(r"##\s*Feature bandite\s*\n(.*?)(?=\n##\s|\Z)", text, re.S)
@@ -221,7 +221,7 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{3,}$")
 def path_exists_anywhere(rel: str) -> bool:
     """
     Un documento puo' citare un file per nome senza il percorso completo: `foo.md`
-    che sta in docs/, mentre chi lo cita e' in docs/context/. Cercarlo solo dalla
+    che sta in docs/, mentre chi lo cita e' in docs/keep-fresh/context/. Cercarlo solo dalla
     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
     sono il modo in cui un lint smette di essere letto. Regge anche i glob (`lib/*.h`).
     """
@@ -346,10 +346,10 @@ def check_evidence(rep: Report):
                           f"{p.name}:{n} — [{m.group(1)}] e' il lessico della "
                           f"conversazione: nei documenti si usa "
                           f"verificato/dedotto/assunto")
-    rep.note("  cruscotto evidenza in docs/context/:  " +
+    rep.note("  cruscotto evidenza in docs/keep-fresh/context/:  " +
              "  ".join(f"{lvl}={counts[lvl]}" for lvl in LEVELS))
     if counts["verificato"] == 0:
-        rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/context/")
+        rep.warn("EVIDENZA", "nessun '**verificato**' in tutta docs/keep-fresh/context/")
 
 
 # ---------------------------------------------------------------- 4. link e ancore
@@ -432,7 +432,7 @@ def check_freshness(rep: Report):
     status = CONTEXT / "status.md"
     text = read(status)
     if not text:
-        rep.error("FRESCHEZZA", "docs/context/status.md non esiste o non e' leggibile")
+        rep.error("FRESCHEZZA", "docs/keep-fresh/context/status.md non esiste o non e' leggibile")
         return
     sha = core.read_marker(text)
     if not sha:
@@ -490,7 +490,7 @@ def check_weight(rep: Report):
         if p.is_file():
             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
                      f"(piu' cio' che importa)")
-    rep.note(f"  i token veri: {core.PY} scripts/context_cost.py")
+    rep.note(f"  i token veri: {core.PY} .keep-fresh/scripts/context_cost.py")
 
 
 CHECKS = [

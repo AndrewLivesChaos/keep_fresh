@@ -6,7 +6,7 @@ context_core — la parte comune al lint dei documenti e agli hook degli agenti.
 Risponde a tre domande, sempre nello stesso modo per chiunque le faccia:
 
   - dove sta il codice di questo repository;
-  - cosa dice la configurazione scritta a mano (docs/context/config.toml);
+  - cosa dice la configurazione scritta a mano (.keep-fresh/config.toml);
   - a che commit status.md dichiara di essere riconciliato, e cosa e' cambiato da allora.
 
 Dove sta il codice NON e' scritto da nessuna parte: si rileva a ogni esecuzione dai file
@@ -30,9 +30,12 @@ from pathlib import Path
 # devono dire un comando che qui funziona.
 PY = "python" if sys.platform == "win32" else "python3"
 
-CONTEXT_DIR = "docs/context"
-STATUS_FILE = "docs/context/status.md"
-CONFIG_FILE = "docs/context/config.toml"
+# L'impianto sta in due posti: la meccanica (script, taratura, guida) in TOOL_DIR, il
+# contesto scritto dall'agente (stato e documenti) in CONTEXT_DIR.
+TOOL_DIR = ".keep-fresh"
+CONTEXT_DIR = "docs/keep-fresh/context"
+STATUS_FILE = CONTEXT_DIR + "/status.md"
+CONFIG_FILE = TOOL_DIR + "/config.toml"
 
 # I livelli di evidenza, nella forma esatta in cui compaiono nei documenti.
 EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
@@ -40,8 +43,9 @@ EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
 # I file che questo impianto installa. Stanno nell'albero ma non sono codice del
 # progetto: modificarli non rende vecchio lo stato del lavoro, e contengono di proposito
 # i nomi che il lint cerca.
-MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py", "scripts/agent_hooks.py",
-                 "scripts/context_cost.py", "scripts/agent_context_version.json"}
+MANAGED_FILES = {TOOL_DIR + "/scripts/docs_lint.py", TOOL_DIR + "/scripts/context_core.py",
+                 TOOL_DIR + "/scripts/agent_hooks.py", TOOL_DIR + "/scripts/context_cost.py",
+                 TOOL_DIR + "/version.json"}
 # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 MANAGED_NAMES = {"agent_context_init.py"}
 
@@ -299,7 +303,7 @@ def count_levels(root) -> dict:
 
 # Il tetto, in caratteri, dei blocchi session-start che l'hook inietta per intero. E' in
 # caratteri perche' l'hook non ha un tokenizer. Quanti token valgano davvero lo misura
-# scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
+# .keep-fresh/scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
 # impianto un token ha fatto da 1,9 a 2,3 caratteri (stima dalle sessioni, 2026-09-26).
 DEFAULT_INJECTION_BUDGET = 8000
 # Nell'indice, la prima riga di ogni voce si taglia qui: basta a riconoscerla.
@@ -356,7 +360,7 @@ def build_injection(root, cfg=None):
     budget = injection_budget(cfg)
 
     out = [
-        "=== Stato del progetto (iniettato da scripts/agent_hooks.py) ===",
+        "=== Stato del progetto (iniettato da .keep-fresh/scripts/agent_hooks.py) ===",
         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, leggi in quel file la "
         f"sezione che ti serve, non il file intero.",
         "",
@@ -374,7 +378,7 @@ def build_injection(root, cfg=None):
                    f"{blocks_chars} caratteri, oltre il tetto di {budget}. Qui sotto c'e' "
                    f"solo il loro indice: leggi nel file le voci che ti servono. Se lavori "
                    f"su {STATUS_FILE}, riporta i blocchi sotto il tetto (vedi "
-                   f"docs/agent_docs_guide.md).")
+                   f".keep-fresh/guide.md).")
         out.append("")
         out.append(index_of(blocks))
     else:
@@ -405,7 +409,7 @@ def build_injection(root, cfg=None):
                    f"precedente mai registrato: valuta se va annotato.")
 
     out += ["", "Verifica che i documenti dicano ancora il vero: "
-                f"{PY} scripts/docs_lint.py",
+                f"{PY} .keep-fresh/scripts/docs_lint.py",
             "=== fine stato del progetto ==="]
     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
             "reduced": reduced, "levels": levels}
