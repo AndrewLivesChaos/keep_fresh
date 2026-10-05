@@ -64,9 +64,9 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-05T11:43:08',
+    'packed_at': '2026-10-05T11:44:52',
     'source': 'keep_fresh',
-    'commit': '068b9be',
+    'commit': '617fcbd',
     'payload_dirty': False,
     'payload_sha': '0a29e206d2b1',
 }
@@ -713,6 +713,7 @@ def smoke_test() -> bool:
                 "[a](../README.md) [b](status.md) [c](../context/status.md) "
                 "[d](../../AGENTS.md#x) [e](https://x.y/z) [f](#sez) [g](config.toml)\n"),
             "docs/README.md": "# docs\n",
+            "docs/superpowers/plans/p.md": "Vedi [stato](../../context/status.md) e `docs/context/`.\n",
             "docs/backend.md": ("Vedi [stato](context/status.md), "
                                 "[arch](context/architecture.md#x), [sito](https://x.y/z).\n"),
             "docs/context/config.toml": taratura,
@@ -765,6 +766,10 @@ def smoke_test() -> bool:
              "[stato](keep-fresh/context/status.md)" in back
              and "[arch](keep-fresh/context/architecture.md#x)" in back
              and "[sito](https://x.y/z)" in back, back)
+        piano = (tmp / "docs" / "superpowers" / "plans" / "p.md").read_text(encoding="utf-8")
+        step("nei piani storici i link si riscrivono e la prosa no",
+             "[stato](../../keep-fresh/context/status.md)" in piano
+             and "`docs/context/`" in piano, piano)
         step("i file dell'impianto nuovi ci sono",
              all((tmp / rel).is_file() for rel in (LINT_SCRIPT, CORE_SCRIPT, HOOKS_SCRIPT,
                                                    COST_SCRIPT, GUIDE_FILE, VERSION_FILE)))
@@ -1133,14 +1138,15 @@ def rewrite_links(root: Path, dry: bool) -> tuple:
     rotto: quelli che escono dalla cartella spostata (un livello piu' in profondita') e
     quelli che da fuori ci entrano. E' meccanico e sicuro: ogni link si risolve al suo
     bersaglio com'era, il bersaglio si porta dov'e' adesso, e il link si riscrive relativo
-    al file dov'e' adesso. Solo link in linea, solo .md. Restano fuori i piani e le
-    specifiche storici e la meccanica. Ritorna (link riscritti, file toccati).
+    al file dov'e' adesso. Solo link in linea, solo .md. Vale anche per i piani e le
+    specifiche storici: il loro testo non si riscrive, ma i link restano navigabili.
+    Resta fuori la meccanica. Ritorna (link riscritti, file toccati).
     """
     elenco = [f for f in git(root, "ls-files", "--cached", "--others", "--exclude-standard",
                              "--", "*.md").splitlines() if f]
     n_link = n_file = 0
     for rel in elenco:
-        if rel.startswith(f"{TOOL_DIR}/") or rel.startswith("docs/superpowers/"):
+        if rel.startswith(f"{TOOL_DIR}/"):
             continue
         # Nella prova a vuoto i file non si sono ancora mossi; dopo, stanno gia' al nuovo posto.
         if rel == CONTEXT_DIR or rel.startswith(CONTEXT_DIR + "/"):

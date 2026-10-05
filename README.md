@@ -247,7 +247,8 @@ python agent_context_init.py --force
 Cosa fa: sposta `docs/context/` in `docs/keep-fresh/context/` e `docs/context/config.toml`
 in `.keep-fresh/config.toml`, con `git mv` (la storia dei file resta); toglie i vecchi file
 gestiti, ma solo se riconosce che sono i nostri; riscrive l'aggancio degli hook sul nuovo
-script. **Non tocca** gli altri file di `scripts/`, che nei progetti sono pieni di roba
+script; riscrive i **link relativi** dei documenti `.md` che lo spostamento rompe, anche nei
+piani storici (il loro testo non si tocca, i link restano navigabili). **Non tocca** gli altri file di `scripts/`, che nei progetti sono pieni di roba
 propria, né le copie dell'inizializzatore.
 
 Cosa **non** fa: riscrivere i documenti che citano ancora i vecchi percorsi. Li elenca fra i
