@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-05T11:38:08',
+    'packed_at': '2026-10-05T11:42:55',
     'source': 'keep_fresh',
-    'commit': 'fc9a41a',
-    'payload_dirty': False,
-    'payload_sha': '652193a4a665',
+    'commit': '2acf0ab',
+    'payload_dirty': True,
+    'payload_sha': '0a29e206d2b1',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -723,6 +723,14 @@ def smoke_test() -> bool:
             (tmp / rel).write_text(text, encoding="utf-8")
         run("git", "add", "-A")
         run("git", "commit", "-q", "-m", "layout precedente")
+        # Lo stato dichiara di essere riconciliato col commit del layout precedente: dopo la
+        # migrazione i commit che toccavano i vecchi script gestiti non devono contare come
+        # lavoro sul codice (il progetto ha una sua scripts/, quindi e' un'area sorvegliata).
+        sha_pre = run("git", "rev-parse", "--short", "HEAD").stdout.strip()
+        stato_vecchio = stato_vecchio.replace("abc1234", sha_pre)
+        (tmp / OLD_CONTEXT_DIR / "status.md").write_text(stato_vecchio, encoding="utf-8")
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "marcatore dello stato")
 
         r = run(*init)
         step("layout precedente senza --force: si rifiuta (exit 2)",
@@ -783,6 +791,12 @@ def smoke_test() -> bool:
         step("i documenti che citano i vecchi percorsi sono segnalati",
              "citano ancora i vecchi percorsi" in r.stdout and "AGENTS.md" in r.stdout
              and "architecture.md" in r.stdout, r.stdout[-900:])
+        run("git", "add", "-A")
+        run("git", "commit", "-q", "-m", "migrazione del layout")
+        out7 = run(sys.executable, LINT_SCRIPT).stdout
+        step("dopo la migrazione i vecchi script gestiti non contano come codice cambiato",
+             "[FRESCHEZZA]" not in out7 and "commit hanno toccato il codice" not in out7,
+             _lint_lines(out7))
         prima = run("git", "status", "--porcelain").stdout
         r = run(*init, "--force")
         step("rilanciato, non migra di nuovo e non cambia niente",
@@ -3102,6 +3116,12 @@ if __name__ == "__main__":
 # MANAGED_FILES = {TOOL_DIR + "/scripts/docs_lint.py", TOOL_DIR + "/scripts/context_core.py",
 #                  TOOL_DIR + "/scripts/agent_hooks.py", TOOL_DIR + "/scripts/context_cost.py",
 #                  TOOL_DIR + "/version.json"}
+# # Dove stavano questi file nel layout precedente. I file non ci sono piu', ma la cronologia
+# # di git li ricorda: senza escluderli, un commit che li toccava passerebbe per un commit sul
+# # codice, e in un progetto che ha una sua cartella scripts/ lo stato risulterebbe vecchio.
+# LEGACY_MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py",
+#                         "scripts/agent_hooks.py", "scripts/context_cost.py",
+#                         "scripts/agent_context_version.json"}
 # # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 # MANAGED_NAMES = {"agent_context_init.py"}
 #
@@ -3225,7 +3245,8 @@ if __name__ == "__main__":
 #
 #
 # def _is_managed(rel):
-#     return rel in MANAGED_FILES or rel.rsplit("/", 1)[-1] in MANAGED_NAMES
+#     return (rel in MANAGED_FILES or rel in LEGACY_MANAGED_FILES
+#             or rel.rsplit("/", 1)[-1] in MANAGED_NAMES)
 #
 #
 # def _has_source_suffix(rel):
@@ -3301,7 +3322,7 @@ if __name__ == "__main__":
 #     if not tops:
 #         return [], []
 #     specs = list(tops)
-#     specs += [f":(exclude){m}" for m in sorted(MANAGED_FILES)]
+#     specs += [f":(exclude){m}" for m in sorted(MANAGED_FILES | LEGACY_MANAGED_FILES)]
 #     specs += [f":(exclude,glob)**/{n}" for n in sorted(MANAGED_NAMES)]
 #     specs += [f":(exclude){e}" for e in _prefixes(cfg, "exclude")]
 #     specs += [f":(exclude,glob)**/*{s}" for s in sorted(NON_SOURCE_SUFFIXES)]

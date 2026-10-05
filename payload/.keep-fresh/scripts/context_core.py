@@ -46,6 +46,12 @@ EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
 MANAGED_FILES = {TOOL_DIR + "/scripts/docs_lint.py", TOOL_DIR + "/scripts/context_core.py",
                  TOOL_DIR + "/scripts/agent_hooks.py", TOOL_DIR + "/scripts/context_cost.py",
                  TOOL_DIR + "/version.json"}
+# Dove stavano questi file nel layout precedente. I file non ci sono piu', ma la cronologia
+# di git li ricorda: senza escluderli, un commit che li toccava passerebbe per un commit sul
+# codice, e in un progetto che ha una sua cartella scripts/ lo stato risulterebbe vecchio.
+LEGACY_MANAGED_FILES = {"scripts/docs_lint.py", "scripts/context_core.py",
+                        "scripts/agent_hooks.py", "scripts/context_cost.py",
+                        "scripts/agent_context_version.json"}
 # L'inizializzatore si copia dove capita, quindi si riconosce per nome.
 MANAGED_NAMES = {"agent_context_init.py"}
 
@@ -169,7 +175,8 @@ def known_files(root):
 
 
 def _is_managed(rel):
-    return rel in MANAGED_FILES or rel.rsplit("/", 1)[-1] in MANAGED_NAMES
+    return (rel in MANAGED_FILES or rel in LEGACY_MANAGED_FILES
+            or rel.rsplit("/", 1)[-1] in MANAGED_NAMES)
 
 
 def _has_source_suffix(rel):
@@ -245,7 +252,7 @@ def code_scope(root, cfg):
     if not tops:
         return [], []
     specs = list(tops)
-    specs += [f":(exclude){m}" for m in sorted(MANAGED_FILES)]
+    specs += [f":(exclude){m}" for m in sorted(MANAGED_FILES | LEGACY_MANAGED_FILES)]
     specs += [f":(exclude,glob)**/{n}" for n in sorted(MANAGED_NAMES)]
     specs += [f":(exclude){e}" for e in _prefixes(cfg, "exclude")]
     specs += [f":(exclude,glob)**/*{s}" for s in sorted(NON_SOURCE_SUFFIXES)]
