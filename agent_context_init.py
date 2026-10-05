@@ -41,6 +41,7 @@ import ast
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -63,9 +64,9 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-05T11:30:36',
+    'packed_at': '2026-10-05T11:38:08',
     'source': 'keep_fresh',
-    'commit': '43b9ac9',
+    'commit': 'fc9a41a',
     'payload_dirty': False,
     'payload_sha': '652193a4a665',
 }
@@ -707,7 +708,13 @@ def smoke_test() -> bool:
             "scripts/__pycache__/context_core.cpython-314.pyc": "x",
             "docs/agent_docs_guide.md": "# Istruzioni per l'agente — creare il contesto di progetto\n",
             "docs/context/status.md": stato_vecchio,
-            "docs/context/architecture.md": "# Architettura\nVedi `scripts/docs_lint.py`.\n",
+            "docs/context/architecture.md": (
+                "# Architettura\nVedi `scripts/docs_lint.py`.\n"
+                "[a](../README.md) [b](status.md) [c](../context/status.md) "
+                "[d](../../AGENTS.md#x) [e](https://x.y/z) [f](#sez) [g](config.toml)\n"),
+            "docs/README.md": "# docs\n",
+            "docs/backend.md": ("Vedi [stato](context/status.md), "
+                                "[arch](context/architecture.md#x), [sito](https://x.y/z).\n"),
             "docs/context/config.toml": taratura,
             "AGENTS.md": "Lint: python scripts/docs_lint.py. Guida: docs/agent_docs_guide.md\n",
             ".claude/settings.local.json": vecchio_hook,
@@ -739,6 +746,17 @@ def smoke_test() -> bool:
         step("la taratura scritta a mano passa intatta in " + CONFIG_FILE,
              (tmp / CONFIG_FILE).is_file()
              and (tmp / CONFIG_FILE).read_text(encoding="utf-8") == taratura)
+        arch = (tmp / CONTEXT_DIR / "architecture.md").read_text(encoding="utf-8")
+        step("i link relativi dei documenti spostati si riscrivono",
+             all(s in arch for s in ("[a](../../README.md)", "[b](status.md)",
+                                     "[c](status.md)", "[d](../../../AGENTS.md#x)",
+                                     "[e](https://x.y/z)", "[f](#sez)",
+                                     "[g](../../../.keep-fresh/config.toml)")), arch)
+        back = (tmp / "docs" / "backend.md").read_text(encoding="utf-8")
+        step("i link che da fuori entrano in docs/context/ si riscrivono",
+             "[stato](keep-fresh/context/status.md)" in back
+             and "[arch](keep-fresh/context/architecture.md#x)" in back
+             and "[sito](https://x.y/z)" in back, back)
         step("i file dell'impianto nuovi ci sono",
              all((tmp / rel).is_file() for rel in (LINT_SCRIPT, CORE_SCRIPT, HOOKS_SCRIPT,
                                                    COST_SCRIPT, GUIDE_FILE, VERSION_FILE)))
@@ -1074,6 +1092,78 @@ def _move(root: Path, src: str, dst: str) -> None:
     shutil.move(str(root / src), str(root / dst))
 
 
+INLINE_LINK_RE = re.compile(r"\]\(([^)\s]+)")
+
+
+def _relposix(target: str, start: str) -> str:
+    """Percorso relativo da `start` (una cartella) a `target`, con soli slash."""
+    t, s = [p for p in target.split("/") if p], [p for p in start.split("/") if p]
+    i = 0
+    while i < min(len(t), len(s)) and t[i] == s[i]:
+        i += 1
+    return "/".join([".."] * (len(s) - i) + t[i:]) or "."
+
+
+def _new_location(rel: str) -> str:
+    """Dov'e' adesso un percorso che stava nel layout precedente."""
+    if rel == OLD_CONFIG_FILE:
+        return CONFIG_FILE
+    if rel == OLD_CONTEXT_DIR or rel.startswith(OLD_CONTEXT_DIR + "/"):
+        return CONTEXT_DIR + rel[len(OLD_CONTEXT_DIR):]
+    return rel
+
+
+def rewrite_links(root: Path, dry: bool) -> tuple:
+    """
+    Riscrive i link relativi dei documenti .md che lo spostamento di docs/context/ ha
+    rotto: quelli che escono dalla cartella spostata (un livello piu' in profondita') e
+    quelli che da fuori ci entrano. E' meccanico e sicuro: ogni link si risolve al suo
+    bersaglio com'era, il bersaglio si porta dov'e' adesso, e il link si riscrive relativo
+    al file dov'e' adesso. Solo link in linea, solo .md. Restano fuori i piani e le
+    specifiche storici e la meccanica. Ritorna (link riscritti, file toccati).
+    """
+    elenco = [f for f in git(root, "ls-files", "--cached", "--others", "--exclude-standard",
+                             "--", "*.md").splitlines() if f]
+    n_link = n_file = 0
+    for rel in elenco:
+        if rel.startswith(f"{TOOL_DIR}/") or rel.startswith("docs/superpowers/"):
+            continue
+        # Nella prova a vuoto i file non si sono ancora mossi; dopo, stanno gia' al nuovo posto.
+        if rel == CONTEXT_DIR or rel.startswith(CONTEXT_DIR + "/"):
+            old_rel, new_rel = OLD_CONTEXT_DIR + rel[len(CONTEXT_DIR):], rel
+        else:
+            old_rel, new_rel = rel, _new_location(rel)
+        p = root / (old_rel if dry else new_rel)
+        try:
+            text = p.read_text(encoding="utf-8", newline="")
+        except (OSError, UnicodeDecodeError):
+            continue
+        mine = [0]
+
+        def fix(m):
+            target = m.group(1)
+            if re.match(r"^(?:[a-z][a-z0-9+.-]*:|#|/|<)", target, re.I):
+                return m.group(0)
+            path, sep, frag = target.partition("#")
+            if not path:
+                return m.group(0)
+            res = posixpath.normpath(posixpath.join(posixpath.dirname(old_rel), path))
+            new = _relposix(_new_location(res), posixpath.dirname(new_rel))
+            if path.endswith("/") and not new.endswith("/"):
+                new += "/"
+            if new == path:
+                return m.group(0)
+            mine[0] += 1
+            return "](" + new + sep + frag
+        new_text = INLINE_LINK_RE.sub(fix, text)
+        if mine[0]:
+            n_link += mine[0]
+            n_file += 1
+            if not dry:
+                p.write_text(new_text, encoding="utf-8", newline="")
+    return n_link, n_file
+
+
 def migrate_layout_moves(root: Path, layout: dict, dry: bool) -> list:
     """
     Sposta il contesto e la taratura. VA PRIMA di tutto il resto: dopo, il lint e gli hook
@@ -1090,6 +1180,11 @@ def migrate_layout_moves(root: Path, layout: dict, dry: bool) -> list:
         msgs.append(f"{OLD_CONFIG_FILE}  ->  {CONFIG_FILE}")
         if not dry:
             _move(root, f"{CONTEXT_DIR}/config.toml", CONFIG_FILE)
+    if layout["context"]:
+        n_link, n_file = rewrite_links(root, dry)
+        if n_link:
+            msgs.append(f"{n_link} link relativi riscritti in {n_file} documenti .md "
+                        f"(quelli che lo spostamento rompe)")
     return msgs
 
 
