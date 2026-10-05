@@ -35,6 +35,20 @@ New-Item -ItemType Junction -Path "$HOME\.claude\skills\keep-fresh" -Target "C:\
 ln -s ~/projects/keep_fresh ~/.claude/skills/keep-fresh
 ```
 
+Se invece la installi **copiando** i tre file che servono (`SKILL.md`,
+`agent_context_init.py`, `README.md`), la copia resta indietro a ogni modifica del
+repository. `deploy.py` la riallinea, in `~/.claude/skills` e in `~/.claude-lavoro/skills`
+(salta quelle che non esistono sulla macchina):
+
+```powershell
+python deploy.py --check     # confronta soltanto; esce con 1 se una copia e' indietro
+python deploy.py --dry-run   # dice cosa copierebbe
+python deploy.py             # copia dove c'e' differenza
+```
+
+Non scrive in una destinazione che è un collegamento (modificherebbe il repository) e non
+cancella i file in più. Provato su Windows 11, Python 3.14.7, in cartelle di prova.
+
 Poi `/keep-fresh` dentro il progetto da preparare. La skill è **solo manuale**
 (`disable-model-invocation: true`): l'agente non la attiva da solo e la sua descrizione
 non entra nel contesto delle sessioni, perché serve di rado. Lancia lo script sul repository della cartella
