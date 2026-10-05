@@ -1191,20 +1191,21 @@ def migrate_layout_moves(root: Path, layout: dict, dry: bool) -> list:
     viene scambiata per un file che manca (e rifatta vuota).
     """
     msgs = []
+    verbo = "sposterebbe" if dry else "spostato"
     had_cfg = (root / OLD_CONFIG_FILE).is_file()      # da guardare PRIMA di spostare
     if layout["context"]:
-        msgs.append(f"{OLD_CONTEXT_DIR}/  ->  {CONTEXT_DIR}/")
+        msgs.append(f"{verbo}  {OLD_CONTEXT_DIR}/  ->  {CONTEXT_DIR}/")
         if not dry:
             _move(root, OLD_CONTEXT_DIR, CONTEXT_DIR)
     if had_cfg:
-        msgs.append(f"{OLD_CONFIG_FILE}  ->  {CONFIG_FILE}")
+        msgs.append(f"{verbo}  {OLD_CONFIG_FILE}  ->  {CONFIG_FILE}")
         if not dry:
             _move(root, f"{CONTEXT_DIR}/config.toml", CONFIG_FILE)
     if layout["context"]:
         n_link, n_file = rewrite_links(root, dry)
         if n_link:
-            msgs.append(f"{n_link} link relativi riscritti in {n_file} documenti .md "
-                        f"(quelli che lo spostamento rompe)")
+            msgs.append(f"{'riscriverebbe' if dry else 'riscritti'}  {n_link} link relativi in "
+                        f"{n_file} documenti .md (quelli che lo spostamento rompe)")
     return msgs
 
 
@@ -1844,9 +1845,8 @@ def main() -> int:
                   f"Migrarlo sposta dei file: rilancia con --force, e prima con --dry-run per\n"
                   f"vedere cosa succede. Non ho scritto niente.")
             return 2
-        verbo = "sposterebbe" if args.dry_run else "spostato"
         for m in migrate_layout_moves(root, layout, args.dry_run):
-            print(f"  migrazione layout: {verbo}  {m}")
+            print(f"  migrazione layout: {m}")
 
     # Un contesto della versione precedente va riconosciuto PRIMA di scrivere: dopo,
     # --force ha gia' sostituito il lint e tolto gli hook vecchi.
