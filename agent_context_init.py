@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T11:52:29',
+    'packed_at': '2026-10-06T11:54:24',
     'source': 'keep_fresh',
-    'commit': '4a9ea13',
+    'commit': '52aa892',
     'payload_dirty': True,
-    'payload_sha': '189e62814488',
+    'payload_sha': '4ae4f8520d23',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -844,6 +844,70 @@ def smoke_test() -> bool:
         step("handoff: sullo stesso branch un HEAD piu' avanti non e' una discordanza",
              "Stesso branch" in r.stdout and "altro branch" not in r.stdout
              and "HEAD non" not in r.stdout, r.stdout[-300:])
+        reset_handoff()
+
+        # L'indice all'avvio: poche righe, solo se c'e' qualcosa, mai quando il contesto
+        # c'e' gia' (resume, compact).
+        def avvio(source=None):
+            data = {} if source is None else {"source": source}
+            return run(sys.executable, HOOKS_SCRIPT, "session-start", "--agent", "prova",
+                       stdin=json.dumps(data))
+
+        reset_handoff()
+        r = avvio("startup")
+        step("handoff: senza handoff l'avvio non aggiunge niente",
+             r.returncode == 0 and "Handoff aperti" not in r.stdout
+             and "Stato del progetto" in r.stdout, r.stdout[-300:])
+        hand("new", "--title", "Uno")
+        for f in handoffs()[:1]:
+            riempi(f)
+        for src in ("startup", "clear", None, "boh"):
+            r = avvio(src)
+            step(f"handoff: all'avvio con source={src!r} l'indice c'e', dopo lo stato",
+                 r.returncode == 0 and "Handoff aperti" in r.stdout and "Uno" in r.stdout
+                 and "Stato del progetto" in r.stdout
+                 and r.stdout.index("Stato del progetto") < r.stdout.index("Handoff aperti"),
+                 f"exit {r.returncode}: {r.stdout[-400:]}")
+        for src in ("resume", "compact"):
+            r = avvio(src)
+            step(f"handoff: con source={src!r} l'indice non c'e'",
+                 r.returncode == 0 and "Handoff aperti" not in r.stdout, r.stdout[-300:])
+        agent_log = (tmp / ".git" / "agent-hooks.log").read_text(encoding="utf-8")
+        step("handoff: la traccia degli hook registra l'indice, e la riga dell'iniezione resta com'era",
+             "handoff: indice di 1 voce" in agent_log
+             and re.search(r"SessionStart\s+iniettati \d+ caratteri", agent_log),
+             agent_log[-500:])
+
+        reset_handoff()
+        for i in range(7):
+            hand("new", "--title", f"Voce {i}")
+        r = avvio("startup")
+        numerate = [l for l in r.stdout.splitlines() if re.match(r"\s*\d+\. ", l)]
+        step("handoff: l'indice mostra al massimo 5 righe e dice quanti altri",
+             len(numerate) == 5 and "+2 altri" in r.stdout and "--elenco" in r.stdout,
+             f"{len(numerate)} righe: {r.stdout[-500:]}")
+
+        reset_handoff()
+        hand("new", "--title", "Sano")
+        hdir.mkdir(exist_ok=True)
+        (hdir / "rotto.md").write_text("---\ntitolo\n---\n", encoding="utf-8")
+        r = avvio("startup")
+        step("handoff: un file rotto non ferma l'avvio e non nasconde gli altri",
+             r.returncode == 0 and "Sano" in r.stdout and "Stato del progetto" in r.stdout,
+             f"exit {r.returncode}: {r.stdout[-300:]}{r.stderr[-300:]}")
+
+        reset_handoff()
+        hand("new", "--title", "Chiuso da tempo")
+        hand("new", "--title", "Ancora aperto")
+        vecchio = next((f for f in handoffs() if "chiuso-da-tempo" in f.name),
+                       hdir / "assente.md")
+        if vecchio.exists():
+            hand("discard", "chiuso da tempo")
+            quaranta = (_dt.now() - _td(days=40)).timestamp()
+            os.utime(vecchio, (quaranta, quaranta))
+        avvio("startup")
+        step("handoff: l'avvio pulisce i chiusi da piu' di 30 giorni e lascia gli altri",
+             not vecchio.exists() and len(handoffs()) == 1, f"{[f.name for f in handoffs()]}")
         reset_handoff()
 
         # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
@@ -3250,7 +3314,8 @@ if __name__ == "__main__":
 #                  se superano il tetto di config.toml (il testo lo costruisce
 #                  context_core.build_injection). Lo stdout di questo evento entra nel
 #                  contesto dell'agente, NON a schermo: l'utente non vede niente ed e'
-#                  normale.
+#                  normale. Accoda l'indice degli handoff aperti (handoff.py), tranne con
+#                  source resume o compact.
 #   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
 #                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
 #                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
@@ -3303,6 +3368,18 @@ if __name__ == "__main__":
 # core = load_core()
 #
 #
+# def load_handoff():
+#     """Come load_core: un modulo che non si importa vale come assente, mai come errore."""
+#     try:
+#         import handoff
+#         return handoff
+#     except Exception:
+#         return None
+#
+#
+# handoff = load_handoff()
+#
+#
 # def log(event: str, outcome: str) -> None:
 #     """
 #     Una riga per esecuzione, anche per gli esiti silenziosi: un hook fail-open rotto e
@@ -3346,17 +3423,39 @@ if __name__ == "__main__":
 #     inj = core.build_injection(root)
 #     if inj is None:
 #         log("SessionStart", f"nessun {core.STATUS_FILE}: niente da iniettare")
-#         return 0
-#
-#     text = inj["text"]
-#     print(text)
-#     # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
-#     ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
-#                if inj["reduced"] else "")
-#     log("SessionStart", f"iniettati {len(text)} caratteri "
-#                         f"(fonte={data.get('source', '?')}, "
-#                         f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
+#     else:
+#         text = inj["text"]
+#         print(text)
+#         # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
+#         ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
+#                    if inj["reduced"] else "")
+#         log("SessionStart", f"iniettati {len(text)} caratteri "
+#                             f"(fonte={data.get('source', '?')}, "
+#                             f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
+#     handoff_index(root, data)
 #     return 0
+#
+#
+# def handoff_index(root, data: dict) -> None:
+#     """
+#     Accoda l'indice degli handoff aperti, e pulisce quelli chiusi da tempo. Non con
+#     `resume` e `compact`: il contesto c'e' gia'. Con una `source` assente o che non
+#     conosciamo si mostra: l'indice costa poche righe, il silenzio sarebbe il difetto
+#     peggiore. Fail-open anche qui: un errore degli handoff non tocca l'iniezione.
+#     """
+#     if handoff is None or data.get("source") in ("resume", "compact"):
+#         return
+#     try:
+#         cfg, _ = core.load_config(root)
+#         now = datetime.now().astimezone()
+#         handoff.prune(root, now, cfg)
+#         text, n = handoff.index_text(root, now, cfg)
+#     except Exception as exc:
+#         log("SessionStart", f"handoff: ERRORE {type(exc).__name__} (indice saltato)")
+#         return
+#     if text:
+#         print("\n" + text)
+#         log("SessionStart", f"handoff: indice di {n} " + ("voce" if n == 1 else "voci"))
 #
 #
 # # -------------------------------------------------------------------------------- stop

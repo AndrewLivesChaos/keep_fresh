@@ -16,7 +16,8 @@ il protocollo usato e' quello che gli agenti supportati hanno in comune.
                  se superano il tetto di config.toml (il testo lo costruisce
                  context_core.build_injection). Lo stdout di questo evento entra nel
                  contesto dell'agente, NON a schermo: l'utente non vede niente ed e'
-                 normale.
+                 normale. Accoda l'indice degli handoff aperti (handoff.py), tranne con
+                 source resume o compact.
   stop           a fine turno, se il codice e' cambiato e status.md no, stampa su stdout
                  {"decision": "block", "reason": ...} ed esce 0: l'agente non chiude e
                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
@@ -69,6 +70,18 @@ def load_core():
 core = load_core()
 
 
+def load_handoff():
+    """Come load_core: un modulo che non si importa vale come assente, mai come errore."""
+    try:
+        import handoff
+        return handoff
+    except Exception:
+        return None
+
+
+handoff = load_handoff()
+
+
 def log(event: str, outcome: str) -> None:
     """
     Una riga per esecuzione, anche per gli esiti silenziosi: un hook fail-open rotto e
@@ -112,17 +125,39 @@ def session_start(data: dict) -> int:
     inj = core.build_injection(root)
     if inj is None:
         log("SessionStart", f"nessun {core.STATUS_FILE}: niente da iniettare")
-        return 0
-
-    text = inj["text"]
-    print(text)
-    # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
-    ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
-               if inj["reduced"] else "")
-    log("SessionStart", f"iniettati {len(text)} caratteri "
-                        f"(fonte={data.get('source', '?')}, "
-                        f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
+    else:
+        text = inj["text"]
+        print(text)
+        # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
+        ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
+                   if inj["reduced"] else "")
+        log("SessionStart", f"iniettati {len(text)} caratteri "
+                            f"(fonte={data.get('source', '?')}, "
+                            f"assunto={inj['levels'].get('assunto', 0)}{ridotto})")
+    handoff_index(root, data)
     return 0
+
+
+def handoff_index(root, data: dict) -> None:
+    """
+    Accoda l'indice degli handoff aperti, e pulisce quelli chiusi da tempo. Non con
+    `resume` e `compact`: il contesto c'e' gia'. Con una `source` assente o che non
+    conosciamo si mostra: l'indice costa poche righe, il silenzio sarebbe il difetto
+    peggiore. Fail-open anche qui: un errore degli handoff non tocca l'iniezione.
+    """
+    if handoff is None or data.get("source") in ("resume", "compact"):
+        return
+    try:
+        cfg, _ = core.load_config(root)
+        now = datetime.now().astimezone()
+        handoff.prune(root, now, cfg)
+        text, n = handoff.index_text(root, now, cfg)
+    except Exception as exc:
+        log("SessionStart", f"handoff: ERRORE {type(exc).__name__} (indice saltato)")
+        return
+    if text:
+        print("\n" + text)
+        log("SessionStart", f"handoff: indice di {n} " + ("voce" if n == 1 else "voci"))
 
 
 # -------------------------------------------------------------------------------- stop
