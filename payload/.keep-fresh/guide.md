@@ -549,6 +549,28 @@ con i suoi plugin, la base dell'harness vale circa 28 mila token e l'impianto ne
 lunghe va da 175 a 260 mila token [misurato, trascrizioni]. **Il costo lo decide la lunghezza delle sessioni**: una sessione
 per compito, `/clear` fra un compito e l'altro, sottoagenti per le letture pesanti.
 
+### 4. L'handoff — il filo di una sola sessione
+
+`status.md` dice dove sta il **progetto**; non dice dove sei tu in questa sessione, con le
+decisioni di stamattina e i vicoli ciechi che non vuoi ripercorrere. Quando il contesto
+diventa troppo grande, l'hook di `prompt` ferma il messaggio una volta e propone di
+scrivere un handoff e cambiare sessione. **Lo scrivi tu**, con
+`handoff.py new --title "..."` (`python3` su macOS/Linux) e riempiendo il file:
+
+- **Obiettivo**: cosa stavi ottenendo e per chi. Una riga, non la storia.
+- **Fatto**: separa cio' che e' finito *e verificato* da cio' che e' finito e basta.
+- **Decisioni**: cosa hai scelto, **perche'**, e le alternative scartate. Il perche' e' la
+  parte che chi riprende non puo' ricostruire dal codice.
+- **Non ha funzionato**: i vicoli ciechi, con il motivo. E' la sezione che fa risparmiare
+  piu' tempo.
+- **Prossimo passo**: la prima cosa da fare, concreta. Chi riprende parte da qui.
+- **File e stato git**: cosa e' toccato, cosa non e' committato, su quale branch.
+
+Cancella la riga `<!-- handoff-vuoto ... -->` quando hai finito: finche' c'e', l'elenco
+segna l'handoff `(vuoto)`. **Niente credenziali, chiavi, token**, nemmeno se sono comparsi
+nella sessione: il file e' locale, ma resta su disco. La nuova sessione non lo legge da sola:
+vede una riga in elenco, e lo riprende l'utente con `/keep-fresh resume`.
+
 ## Procedura
 
 L'ordine conta: è quello che evita di perdere informazione mentre riordini.

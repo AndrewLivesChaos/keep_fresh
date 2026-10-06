@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T11:56:12',
+    'packed_at': '2026-10-06T11:58:35',
     'source': 'keep_fresh',
-    'commit': '4445c57',
+    'commit': 'a0b9de5',
     'payload_dirty': True,
-    'payload_sha': '2224b663b35f',
+    'payload_sha': '5f3cc907e0ba',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -955,6 +955,16 @@ def smoke_test() -> bool:
         avvio("startup")
         step("handoff: l'avvio pulisce i chiusi da piu' di 30 giorni e lascia gli altri",
              not vecchio.exists() and len(handoffs()) == 1, f"{[f.name for f in handoffs()]}")
+        reset_handoff()
+
+        # --status riporta gli handoff aperti, senza scrivere niente.
+        hand("new", "--title", "Per lo stato")
+        prima = snap()
+        r = run(*init, "--status")
+        step("--status riporta gli handoff aperti",
+             "handoff" in r.stdout and "Handoff aperti: 1" in r.stdout, r.stdout[-700:])
+        step("--status con un handoff aperto e' ancora di sola lettura",
+             not cambiati(prima), f"{cambiati(prima)}")
         reset_handoff()
 
         # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
@@ -2268,6 +2278,21 @@ def status(root: Path, payload: dict) -> int:
         if non_fidato:
             print(f"{'':<26}progetto NON fidato in ~/.codex/config.toml: Codex salta gli hook")
 
+    hand = root / HANDOFF_SCRIPT
+    if hand.is_file():
+        print("\nHandoff")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", GIT_OPTIONAL_LOCKS="0")
+        r = subprocess.run([sys.executable, str(hand), "list"], cwd=str(root),
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env)
+        prima_riga = (r.stdout.splitlines() or [""])[0]
+        if r.returncode == 0 and prima_riga:
+            riga("OK", "handoff", f"{prima_riga} (.git/keep-fresh-handoff/)")
+        else:
+            riga("!!", "handoff", "handoff.py list non risponde")
+            problemi.append(f"`{interp} {HANDOFF_SCRIPT} list` esce con errore: lancialo "
+                            f"a mano per vedere perche'.")
+
     print("\nQualita'")
     lint = root / LINT_SCRIPT
     if not lint.is_file():
@@ -3209,6 +3234,28 @@ if __name__ == "__main__":
 # 3-4 mila [misurato, 2026-09-28], mentre il contesto medio per chiamata nelle sessioni
 # lunghe va da 175 a 260 mila token [misurato, trascrizioni]. **Il costo lo decide la lunghezza delle sessioni**: una sessione
 # per compito, `/clear` fra un compito e l'altro, sottoagenti per le letture pesanti.
+#
+# ### 4. L'handoff — il filo di una sola sessione
+#
+# `status.md` dice dove sta il **progetto**; non dice dove sei tu in questa sessione, con le
+# decisioni di stamattina e i vicoli ciechi che non vuoi ripercorrere. Quando il contesto
+# diventa troppo grande, l'hook di `prompt` ferma il messaggio una volta e propone di
+# scrivere un handoff e cambiare sessione. **Lo scrivi tu**, con
+# `handoff.py new --title "..."` (`python3` su macOS/Linux) e riempiendo il file:
+#
+# - **Obiettivo**: cosa stavi ottenendo e per chi. Una riga, non la storia.
+# - **Fatto**: separa cio' che e' finito *e verificato* da cio' che e' finito e basta.
+# - **Decisioni**: cosa hai scelto, **perche'**, e le alternative scartate. Il perche' e' la
+#   parte che chi riprende non puo' ricostruire dal codice.
+# - **Non ha funzionato**: i vicoli ciechi, con il motivo. E' la sezione che fa risparmiare
+#   piu' tempo.
+# - **Prossimo passo**: la prima cosa da fare, concreta. Chi riprende parte da qui.
+# - **File e stato git**: cosa e' toccato, cosa non e' committato, su quale branch.
+#
+# Cancella la riga `<!-- handoff-vuoto ... -->` quando hai finito: finche' c'e', l'elenco
+# segna l'handoff `(vuoto)`. **Niente credenziali, chiavi, token**, nemmeno se sono comparsi
+# nella sessione: il file e' locale, ma resta su disco. La nuova sessione non lo legge da sola:
+# vede una riga in elenco, e lo riprende l'utente con `/keep-fresh resume`.
 #
 # ## Procedura
 #

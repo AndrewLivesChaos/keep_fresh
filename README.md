@@ -123,6 +123,7 @@ agenti e le persone (`status.md`, `architecture.md`, `conventions.md`...).
 | `.keep-fresh/scripts/context_core.py` | gestito | come sopra. Comune a lint e hook: dove sta il codice |
 | `.keep-fresh/scripts/agent_hooks.py` | gestito | come sopra. Gli hook, uguali per ogni agente |
 | `.keep-fresh/scripts/context_cost.py` | gestito | come sopra. Quanto pesa il contesto, misurato |
+| `.keep-fresh/scripts/handoff.py` | gestito | come sopra. Gli handoff fra sessioni, in `.git/keep-fresh-handoff/` |
 | `.keep-fresh/guide.md` | gestito | come sopra. La guida che l'agente esegue |
 | `.keep-fresh/version.json` | gestito | come sopra. Quale versione dello script ha scritto i file gestiti |
 | `docs/keep-fresh/context/status.md` | **seme** | scritto solo se manca, mai sovrascritto, nemmeno con `--force` |
@@ -190,6 +191,35 @@ Ogni numero è marcato **[misurato]**, cioè registrato dall'agente o dalla misu
   precisione è di pochi token. Il risultato va in `.git/context-cost.json`, legato al
   contenuto: se i file cambiano, il resoconto torna a stimare e lo dice;
 - **non provato:** macOS e Linux; Codex nella `misura`, che oggi usa solo Claude Code.
+
+## Cambiare sessione senza perdere il filo: handoff
+
+Quando il contesto di una sessione è troppo grande, conviene aprirne una nuova. Per non
+perdere il filo:
+
+1. L'hook `prompt` ferma il messaggio **una volta per sessione** quando il contesto supera
+   `handoff_warn_tokens` (150.000 token di partenza) e propone `/keep-fresh handoff`.
+2. `/keep-fresh handoff`: l'agente scrive in `.git/keep-fresh-handoff/` un file con obiettivo,
+   fatto, decisioni, vicoli ciechi e prossimo passo. Poi fai `/clear` o apri una sessione nuova.
+3. Nella sessione nuova l'hook di avvio accoda **un indice** (una riga per handoff aperto,
+   al massimo cinque). Non ne legge il contenuto e non agisce: se parli d'altro, lo ignora.
+4. `/keep-fresh resume [n|parola]` riprende quello che scegli. Se è scritto su un altro
+   branch o su un HEAD che non è nel tuo storico, lo dice e non lo consuma; `--comunque`
+   lo riprende lo stesso.
+
+Si possono avere più handoff in coda. Ognuno è `aperto`, poi `ripreso` o `scartato`
+(`/keep-fresh handoff --scarta [n|parola]`); oltre `handoff_ore` (48 di partenza) non
+compare più nell'indice, ma nominandolo si riprende ancora; i chiusi e gli scaduti da più
+di `handoff_prune_giorni` (30) si cancellano da soli all'avvio. Le tre chiavi stanno in
+`[context]` di `config.toml`, commentate con il loro valore.
+
+Gli handoff sono **locali**: stanno in `.git/`, non finiscono in un commit e non passano
+da una macchina all'altra. `--status` dice quanti ce ne sono.
+
+- **provato:** Windows, con i collaudi di `--pack`: ciclo `new` → `resume`, indice, soglia,
+  scadenza, pulizia, branch diverso, repository senza commit, file rotti;
+- **non provato:** Codex (il formato del blocco in `prompt` è quello della documentazione),
+  macOS e Linux, e il comportamento della sessione vera di Claude Code oltre i collaudi.
 
 ## Gli agenti
 
