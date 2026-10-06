@@ -32,6 +32,19 @@ resume_warn_tokens = 100000
 # Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
 resume_cache_minutes = 60
 
+# L'handoff, per cambiare sessione senza perdere il filo (/keep-fresh handoff). Le tre
+# chiavi sono commentate con il loro valore: sono quelli del codice, si tolgono i
+# commenti solo per cambiarli.
+# Soglia di contesto, in token, oltre la quale l'hook ferma il messaggio UNA volta per
+# sessione e propone l'handoff. 0 spegne l'avviso.
+# handoff_warn_tokens = 150000
+# Dopo quante ore dalla creazione un handoff non compare piu' da solo nell'indice
+# all'avvio. Il file resta, e nominandolo si riprende.
+# handoff_ore = 48
+# Dopo quanti giorni dall'ultima modifica si cancellano gli handoff ripresi, scartati o
+# scaduti.
+# handoff_prune_giorni = 30
+
 # Le quattro tabelle qui sotto partono VUOTE DI PROPOSITO. Si riempiono guardando i
 # falsi positivi del primo giro di lint. Ogni voce porta il motivo come valore: senza
 # motivo non si aggiunge niente, o in sei mesi queste liste sono una discarica che

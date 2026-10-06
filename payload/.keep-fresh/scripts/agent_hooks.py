@@ -23,8 +23,9 @@ il protocollo usato e' quello che gli agenti supportati hanno in comune.
                  riceve il motivo. Blocca UNA SOLA VOLTA per sessione.
   prompt         prima che un messaggio dell'utente parta (UserPromptSubmit): se la
                  sessione riprende dopo una pausa piu' lunga della cache con un contesto
-                 grande, lo ferma UNA volta e dice quanto costa riprendere. Reinviato,
-                 passa. Soglie in [context] di config.toml.
+                 grande, lo ferma UNA volta e dice quanto costa riprendere. Lo ferma una
+                 volta anche quando il contesto supera handoff_warn_tokens, e propone
+                 l'handoff. Reinviato, passa. Soglie in [context] di config.toml.
 
 Perche' JSON e non l'uscita 2: provato il 2026-09-17 su Windows, Codex 0.154.0 tratta
 l'uscita 2 di Stop come un errore e chiude comunque; la decisione JSON con uscita 0
@@ -239,13 +240,40 @@ def stop(data: dict) -> int:
 
 # ------------------------------------------------------------------------------ prompt
 
+HANDOFF_MESSAGE = """Il contesto di questa sessione e' di {ctx} token (soglia {warn}: [context] handoff_warn_tokens in .keep-fresh/config.toml).
+
+- Per cambiare sessione senza perdere il filo: /keep-fresh handoff. L'agente scrive dove sei arrivato in un file locale; poi /clear o una sessione nuova. La nuova sessione vedra' l'handoff in elenco e lo riprendera' con /keep-fresh resume, se vorrai.
+- Se ti serve tutto questo contesto: reinvia lo stesso messaggio, non ti fermo una seconda volta in questa sessione."""
+
+
+def handoff_notice(call, cfg, g, sid):
+    """(testo, marcatore) se il contesto supera la soglia e in questa sessione non l'ho detto."""
+    if handoff is None or g is None:
+        return None, None
+    warn = handoff.settings(cfg)[0]
+    if warn <= 0 or call["context"] < warn:
+        return None, None
+    flag = g / f"handoff-warn-{sid}.flag"
+    if flag.exists():
+        return None, None
+
+    def fmt(n):
+        return f"{n:,}".replace(",", ".")
+    return HANDOFF_MESSAGE.format(ctx=fmt(call["context"]), warn=fmt(warn)), flag
+
+
 def prompt(data: dict) -> int:
     """
-    Prima che un messaggio dell'utente parta: se la sessione riprende dopo una pausa piu'
-    lunga della cache e il contesto e' grande, ferma il messaggio UNA volta e dice quanto
-    costa riprendere. Il messaggio fermato non arriva al modello e non costa niente.
-    Reinviato, passa. I comandi che iniziano con / passano sempre: fermare un /clear
-    sarebbe fermare proprio il rimedio.
+    Prima che un messaggio dell'utente parta, due avvisi indipendenti, ciascuno UNA volta:
+
+      - ripresa dopo una pausa piu' lunga della cache con un contesto grande: dice quanto
+        costa riprendere;
+      - contesto oltre handoff_warn_tokens: propone l'handoff e il cambio di sessione.
+
+    Se scattano insieme, parte un solo messaggio che li dice entrambi. Il messaggio fermato
+    non arriva al modello e non costa niente. Reinviato, passa. I comandi che iniziano con
+    / passano sempre: fermare un /clear o un /keep-fresh handoff sarebbe fermare proprio il
+    rimedio.
 
     Il formato che ferma e' {"decision": "block", "reason": ...}: provato il 2026-09-28
     su Claude Code 2.1.283 (zero chiamate al modello, il motivo e il messaggio originale
@@ -265,22 +293,33 @@ def prompt(data: dict) -> int:
     g = core.git_dir(root) if root else None
     cfg, _ = core.load_config(root) if root else ({}, None)
     msg, call = core.resume_warning(tp, datetime.now().astimezone(), cfg)
-    if msg is None:
-        log("Prompt", "ok (nessuna chiamata precedente)" if call is None else
-                      f"ok (contesto {call['context']} token, pausa entro la cache o "
-                      f"contesto sotto la soglia)")
+    if call is None:
+        log("Prompt", "ok (nessuna chiamata precedente)")
         return 0
-    # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi la
-    # prossima pausa della stessa sessione avvisa di nuovo.
     sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or "ignota")) or "ignota"
-    flag = (g / f"resume-warn-{sid}-{int(call['ts'].timestamp())}.flag") if g else None
-    if flag is not None and flag.exists():
-        log("Prompt", f"ok (avviso di ripresa gia' dato; contesto {call['context']} token)")
+    parts, flags, kinds = [], [], []
+    if msg is not None:
+        # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi
+        # la prossima pausa della stessa sessione avvisa di nuovo.
+        flag = (g / f"resume-warn-{sid}-{int(call['ts'].timestamp())}.flag") if g else None
+        if flag is None or not flag.exists():
+            parts.append(msg)
+            flags.append(flag)
+            kinds.append("ripresa dopo la pausa")
+    note, hflag = handoff_notice(call, cfg, g, sid)
+    if note:
+        parts.append(note)
+        flags.append(hflag)
+        kinds.append("contesto oltre la soglia dell'handoff")
+    if not parts:
+        log("Prompt", f"ok (contesto {call['context']} token, nessun avviso da dare)")
         return 0
-    if flag is not None:
-        flag.write_text("", encoding="utf-8")
-    log("Prompt", f"FERMATO: ripresa dopo la pausa, contesto {call['context']} token")
-    print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+    for f in flags:
+        if f is not None:
+            f.write_text("", encoding="utf-8")
+    log("Prompt", f"FERMATO: {' + '.join(kinds)}, contesto {call['context']} token")
+    print(json.dumps({"decision": "block", "reason": "\n\n".join(parts)},
+                     ensure_ascii=False))
     return 0
 
 
