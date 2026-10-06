@@ -78,6 +78,12 @@ dopo `resume`.
    `CLAUDE.md` e `docs/keep-fresh/context/status.md` leggendo il repo e chiedendo all'utente ciò che
    nel repo non c'è. La guida è anche in `.keep-fresh/guide.md` del progetto.
 5. **Leggi la diagnosi** stampata dallo script: elenca ciò che ancora non funziona.
+   Se segnala **un'altra copia dell'inizializzatore** nel progetto (per esempio
+   `scripts/agent_context_init.py`), **non sostituirla e non toglierla da solo**: e' una
+   scelta del progetto. Serve a chi clona e non ha la skill, per riagganciare gli hook; chi
+   ha la skill installata non ne ha bisogno. Dillo all'utente con i due esiti (sostituirla
+   con la copia nuova, o toglierla), e che la guida ne prevede una in `.keep-fresh/` e non
+   nel percorso del vecchio layout. Poi aspetta la sua risposta.
 
 Non committare e non fare push senza che l'utente lo chieda.
 
