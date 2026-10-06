@@ -45,7 +45,7 @@ EVIDENCE_LEVELS = ("verificato", "dedotto", "assunto")
 # i nomi che il lint cerca.
 MANAGED_FILES = {TOOL_DIR + "/scripts/docs_lint.py", TOOL_DIR + "/scripts/context_core.py",
                  TOOL_DIR + "/scripts/agent_hooks.py", TOOL_DIR + "/scripts/context_cost.py",
-                 TOOL_DIR + "/version.json"}
+                 TOOL_DIR + "/scripts/handoff.py", TOOL_DIR + "/version.json"}
 # Dove stavano questi file nel layout precedente. I file non ci sono piu', ma la cronologia
 # di git li ricorda: senza escluderli, un commit che li toccava passerebbe per un commit sul
 # codice, e in un progetto che ha una sua cartella scripts/ lo stato risulterebbe vecchio.
