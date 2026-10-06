@@ -110,6 +110,19 @@ def store(root):
     return g / HANDOFF_DIR if g else None
 
 
+def read_text(path):
+    """
+    Il testo del file, con qualunque codifica l'abbia lasciato chi l'ha ritoccato dalla shell
+    di Windows: UTF-8 con o senza BOM (Set-Content -Encoding utf8), UTF-16 con BOM
+    (Out-File di PowerShell 5.1). Un handoff che l'agente ha riscritto cosi' non deve
+    sparire dall'indice: nessuno se ne accorgerebbe.
+    """
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16").replace("\r\n", "\n")
+    return raw.decode("utf-8-sig").replace("\r\n", "\n")
+
+
 def parse(path):
     """
     Un handoff: un dict con percorso, nome ed `errore`; se il file e' valido anche titolo,
@@ -118,8 +131,8 @@ def parse(path):
     """
     e = {"path": path, "name": path.name, "errore": None}
     try:
-        text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-    except (OSError, UnicodeDecodeError) as exc:
+        text = read_text(path)
+    except (OSError, UnicodeError) as exc:
         e["errore"] = f"non leggibile ({type(exc).__name__})"
         return e
     m = META_RE.match(text)
@@ -274,7 +287,7 @@ def select(root, arg, now, cfg):
 
 def set_state(path, state):
     """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    text = read_text(path)
     changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
     if n == 1:
         path.write_text(changed, encoding="utf-8", newline="\n")

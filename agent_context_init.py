@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T11:59:36',
+    'packed_at': '2026-10-06T12:06:09',
     'source': 'keep_fresh',
-    'commit': 'a2d1b12',
-    'payload_dirty': False,
-    'payload_sha': '5f3cc907e0ba',
+    'commit': '3be964e',
+    'payload_dirty': True,
+    'payload_sha': '5d444b1d0f62',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -955,6 +955,31 @@ def smoke_test() -> bool:
         avvio("startup")
         step("handoff: l'avvio pulisce i chiusi da piu' di 30 giorni e lascia gli altri",
              not vecchio.exists() and len(handoffs()) == 1, f"{[f.name for f in handoffs()]}")
+        reset_handoff()
+
+        # Un handoff ritoccato dalla shell di Windows: Set-Content -Encoding utf8 mette il
+        # BOM, Out-File di PowerShell 5.1 scrive UTF-16. Non devono sparire in silenzio.
+        reset_handoff()
+        hand("new", "--title", "Con BOM")
+        hand("new", "--title", "Come PowerShell")
+        f_bom = next((f for f in handoffs() if "con-bom" in f.name), hdir / "assente.md")
+        f_ps = next((f for f in handoffs() if "come-powershell" in f.name),
+                    hdir / "assente.md")
+        if f_bom.exists() and f_ps.exists():
+            f_bom.write_bytes(b"\xef\xbb\xbf" + f_bom.read_bytes())
+            f_ps.write_bytes(f_ps.read_text(encoding="utf-8").encode("utf-16"))
+        r = hand("list")
+        step("handoff: un file con BOM UTF-8 o in UTF-16 resta nell'elenco, non e' segnato rotto",
+             "Handoff aperti: 2" in r.stdout and "ignorato" not in r.stdout
+             and "Con BOM" in r.stdout and "Come PowerShell" in r.stdout,
+             f"{r.stdout[-500:]}{r.stderr[-300:]}")
+        r1 = hand("resume", "bom")
+        r2 = hand("resume", "powershell")
+        r3 = hand("list", "--all")
+        step("handoff: resume su BOM e UTF-16 funziona e li segna ripresi",
+             r1.returncode == 0 and r2.returncode == 0
+             and r3.stdout.count("ripreso") == 2 and "ignorato" not in r3.stdout,
+             f"{r1.stdout[-200:]}{r1.stderr[-200:]}{r2.stderr[-200:]}{r3.stdout[-300:]}")
         reset_handoff()
 
         # --status riporta gli handoff aperti, senza scrivere niente.
@@ -5733,6 +5758,19 @@ if __name__ == "__main__":
 #     return g / HANDOFF_DIR if g else None
 #
 #
+# def read_text(path):
+#     """
+#     Il testo del file, con qualunque codifica l'abbia lasciato chi l'ha ritoccato dalla shell
+#     di Windows: UTF-8 con o senza BOM (Set-Content -Encoding utf8), UTF-16 con BOM
+#     (Out-File di PowerShell 5.1). Un handoff che l'agente ha riscritto cosi' non deve
+#     sparire dall'indice: nessuno se ne accorgerebbe.
+#     """
+#     raw = path.read_bytes()
+#     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+#         return raw.decode("utf-16").replace("\r\n", "\n")
+#     return raw.decode("utf-8-sig").replace("\r\n", "\n")
+#
+#
 # def parse(path):
 #     """
 #     Un handoff: un dict con percorso, nome ed `errore`; se il file e' valido anche titolo,
@@ -5741,8 +5779,8 @@ if __name__ == "__main__":
 #     """
 #     e = {"path": path, "name": path.name, "errore": None}
 #     try:
-#         text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
-#     except (OSError, UnicodeDecodeError) as exc:
+#         text = read_text(path)
+#     except (OSError, UnicodeError) as exc:
 #         e["errore"] = f"non leggibile ({type(exc).__name__})"
 #         return e
 #     m = META_RE.match(text)
@@ -5897,7 +5935,7 @@ if __name__ == "__main__":
 #
 # def set_state(path, state):
 #     """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
-#     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+#     text = read_text(path)
 #     changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
 #     if n == 1:
 #         path.write_text(changed, encoding="utf-8", newline="\n")
