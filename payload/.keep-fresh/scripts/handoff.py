@@ -5,6 +5,11 @@ handoff — il filo di una sessione, per riprenderlo in una sessione nuova.
 
     <python> .keep-fresh/scripts/handoff.py new --title "<una riga>"   crea il file e ne stampa il percorso
     <python> .keep-fresh/scripts/handoff.py list [--all]               gli handoff aperti; --all anche gli altri
+    <python> .keep-fresh/scripts/handoff.py resume [n|parola] [--comunque]
+                                                                       lo stampa e lo segna ripreso; --comunque
+                                                                       anche se branch o HEAD non coincidono
+    <python> .keep-fresh/scripts/handoff.py discard [n|parola]         lo segna scartato
+    <python> .keep-fresh/scripts/handoff.py prune                      cancella i chiusi o scaduti da tempo
 
 Un handoff e' un file in .git/keep-fresh-handoff/ (un fatto della macchina, non del
 repository, come context-cost.json). La meccanica sta qui; il CONTENUTO lo scrive l'agente,
@@ -233,6 +238,69 @@ def new(root, title, now):
     return path
 
 
+def listing(items, root):
+    return "\n".join(line(n, e, root) for n, e in enumerate(items, 1))
+
+
+def select(root, arg, now, cfg):
+    """
+    (handoff, errore). Senza argomento va bene solo se ce n'e' uno; un numero e' la
+    posizione nell'elenco; una parola cerca nei titoli di tutti gli aperti, scaduti
+    compresi: uno scaduto non compare piu' da solo, ma nominandolo si riprende.
+    """
+    items = open_list(root, now, cfg)
+    if arg is None:
+        if len(items) == 1:
+            return items[0], None
+        if not items:
+            return None, "Nessun handoff aperto."
+        return None, ("Piu' di un handoff aperto: dimmi quale (numero o parola del "
+                      "titolo).\n" + listing(items, root))
+    if arg.isdigit():
+        n = int(arg)
+        if 1 <= n <= len(items):
+            return items[n - 1], None
+        return None, f"Nessun handoff numero {n}.\n" + (listing(items, root) or
+                                                        "Nessun handoff aperto.")
+    found = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"
+             and arg.lower() in e["titolo"].lower()]
+    if len(found) == 1:
+        return found[0], None
+    if not found:
+        return None, f"Nessun handoff aperto con «{arg}» nel titolo."
+    return None, (f"«{arg}» sta nel titolo di piu' handoff: scegline uno.\n"
+                  + "\n".join(line(None, e, root) for e in found))
+
+
+def set_state(path, state):
+    """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
+    if n == 1:
+        path.write_text(changed, encoding="utf-8", newline="\n")
+
+
+def prune(root, now, cfg):
+    """
+    Cancella i file chiusi (ripresi, scartati) o scaduti la cui ultima modifica e' piu'
+    vecchia di handoff_prune_giorni. Un aperto non scaduto non si tocca mai, e un file
+    illeggibile nemmeno: potrebbe essere stato scritto a mano. Ritorna i nomi cancellati.
+    """
+    _, hours, days = settings(cfg)
+    gone = []
+    for e in entries(root):
+        if e["errore"] or (e["stato"] == "aperto" and not expired(e, now, hours)):
+            continue
+        try:
+            modified = datetime.fromtimestamp(e["path"].stat().st_mtime).astimezone()
+            if now - modified > timedelta(days=days):
+                e["path"].unlink()
+                gone.append(e["name"])
+        except OSError:
+            pass
+    return gone
+
+
 # -------------------------------------------------------------------------------- comandi
 
 def cmd_list(root, a, now, cfg):
@@ -255,6 +323,47 @@ def cmd_list(root, a, now, cfg):
     return 0
 
 
+def cmd_resume(root, a, now, cfg):
+    e, err = select(root, a.which, now, cfg)
+    if err:
+        print(err)
+        return 1
+    diverso = mismatch(root, e)
+    if diverso and not a.comunque:
+        print(f"ATTENZIONE: {' e '.join(diverso)} (scritto su [{e['branch']}] a "
+              f"{e['head']}, adesso sei su [{current_branch(root)}] a "
+              f"{core.head_sha(root) or '-'}). Non l'ho letto ne' consumato.\n"
+              f"Dillo all'utente. Per riprenderlo comunque: handoff.py resume "
+              f"\"{e['titolo']}\" --comunque")
+        return 1
+    if EMPTY_MARKER in e["corpo"]:
+        print("ATTENZIONE: il corpo non e' stato scritto: c'e' ancora la riga di handoff "
+              "vuoto. Chi l'ha creato non ha finito.\n")
+    when = e["creato"].astimezone().strftime("%d/%m/%Y %H:%M")
+    print(f"# Handoff: {e['titolo']}\nscritto il {when} su [{e['branch']}] a {e['head']}\n")
+    print(e["corpo"].strip("\n"))
+    set_state(e["path"], "ripreso")
+    return 0
+
+
+def cmd_discard(root, a, now, cfg):
+    e, err = select(root, a.which, now, cfg)
+    if err:
+        print(err)
+        return 1
+    set_state(e["path"], "scartato")
+    print(f"Scartato: {e['titolo']}")
+    return 0
+
+
+def cmd_prune(root, a, now, cfg):
+    gone = prune(root, now, cfg)
+    for name in gone:
+        print(f"cancellato {name}")
+    print(f"Pulizia: {len(gone)} file cancellati")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Gli handoff fra sessioni.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -262,6 +371,13 @@ def main(argv=None):
     p.add_argument("--title", required=True, help="una riga: il lavoro e a che punto sei")
     p = sub.add_parser("list", help="gli handoff aperti")
     p.add_argument("--all", action="store_true", help="anche chiusi e scaduti")
+    p = sub.add_parser("resume", help="stampa un handoff e lo segna ripreso")
+    p.add_argument("which", nargs="?", help="numero dell'elenco o parola del titolo")
+    p.add_argument("--comunque", action="store_true",
+                   help="anche se branch o HEAD non coincidono")
+    p = sub.add_parser("discard", help="segna un handoff scartato")
+    p.add_argument("which", nargs="?", help="numero dell'elenco o parola del titolo")
+    sub.add_parser("prune", help="cancella i chiusi e gli scaduti da tempo")
     a = ap.parse_args(argv)
 
     root = core.repo_root()
@@ -277,7 +393,8 @@ def main(argv=None):
             return 1
         print(new(root, a.title, now))
         return 0
-    return cmd_list(root, a, now, cfg)
+    return {"list": cmd_list, "resume": cmd_resume, "discard": cmd_discard,
+            "prune": cmd_prune}[a.cmd](root, a, now, cfg)
 
 
 if __name__ == "__main__":

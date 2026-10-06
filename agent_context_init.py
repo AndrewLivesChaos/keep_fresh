@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T11:50:59',
+    'packed_at': '2026-10-06T11:52:29',
     'source': 'keep_fresh',
-    'commit': '7d98045',
+    'commit': '4a9ea13',
     'payload_dirty': True,
-    'payload_sha': '5a901d5335a2',
+    'payload_sha': '189e62814488',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -716,6 +716,134 @@ def smoke_test() -> bool:
                  f"exit {r.returncode}: {r.stdout[-300:]}{r.stderr[-300:]}")
         finally:
             shutil.rmtree(vuoto, ignore_errors=True)
+        reset_handoff()
+
+        # resume, discard, prune. I titoli distinti permettono di sceglierli per parola;
+        # la numerazione si prova dopo aver messo Alfa piu' indietro nel tempo, perche'
+        # l'ordine di due file creati nello stesso secondo non sarebbe deterministico.
+        reset_handoff()
+        hand("new", "--title", "Alfa: lavoro sul layout")
+        hand("new", "--title", "Beta: lavoro sugli hook")
+        alfa = next((f for f in handoffs() if "alfa" in f.name), hdir / "assente.md")
+        beta = next((f for f in handoffs() if "beta" in f.name), hdir / "assente.md")
+        if alfa.exists() and beta.exists():
+            riempi(alfa, "## Prossimo passo\ntesto-di-alfa\n")
+            riempi(beta, "## Prossimo passo\ntesto-di-beta\n")
+            retrodata(alfa, 5)
+        r = hand("resume")
+        step("handoff: resume senza argomento e con due aperti elenca e non consuma",
+             r.returncode == 1 and "Piu' di un handoff" in r.stdout
+             and "Alfa" in r.stdout and "Beta" in r.stdout
+             and alfa.exists() and "stato: aperto" in alfa.read_text(encoding="utf-8")
+             and beta.exists() and "stato: aperto" in beta.read_text(encoding="utf-8"),
+             f"exit {r.returncode}: {r.stdout[-400:]}{r.stderr[-300:]}")
+        r = hand("resume", "lavoro")
+        step("handoff: una parola che sta in due titoli elenca e non consuma",
+             r.returncode == 1 and "Alfa" in r.stdout and "Beta" in r.stdout
+             and alfa.exists() and "stato: aperto" in alfa.read_text(encoding="utf-8"),
+             f"exit {r.returncode}: {r.stdout[-400:]}{r.stderr[-300:]}")
+        r = hand("resume", "beta")
+        step("handoff: resume per parola stampa il corpo e passa a ripreso",
+             r.returncode == 0 and "testo-di-beta" in r.stdout
+             and "testo-di-alfa" not in r.stdout
+             and beta.exists() and "stato: ripreso" in beta.read_text(encoding="utf-8"),
+             f"exit {r.returncode}: {r.stdout[-400:]}{r.stderr[-300:]}")
+        r = hand("resume", "beta")
+        step("handoff: un handoff ripreso non si riprende da solo una seconda volta",
+             r.returncode == 1 and "Nessun handoff aperto" in r.stdout, r.stdout[-300:])
+        r = hand("list")
+        step("handoff: dopo resume resta solo l'altro", "Handoff aperti: 1" in r.stdout
+             and "Alfa" in r.stdout and "Beta" not in r.stdout, r.stdout[-300:])
+        r = hand("resume")
+        step("handoff: con un solo aperto resume senza argomento lo prende",
+             r.returncode == 0 and "testo-di-alfa" in r.stdout, r.stdout[-300:])
+
+        reset_handoff()
+        hand("new", "--title", "Gamma uno")
+        hand("new", "--title", "Delta due")
+        gamma = next((f for f in handoffs() if "gamma" in f.name), hdir / "assente.md")
+        delta = next((f for f in handoffs() if "delta" in f.name), hdir / "assente.md")
+        if gamma.exists() and delta.exists():
+            riempi(gamma, "testo-di-gamma\n")
+            riempi(delta, "testo-di-delta\n")
+            retrodata(gamma, 5)
+        r = hand("resume", "2")
+        step("handoff: resume N prende il numero dell'elenco (il piu' recente e' 1)",
+             r.returncode == 0 and "testo-di-gamma" in r.stdout, r.stdout[-300:])
+        r = hand("resume", "9")
+        step("handoff: un numero fuori elenco e' un errore che non consuma niente",
+             r.returncode == 1 and delta.exists()
+             and "stato: aperto" in delta.read_text(encoding="utf-8"), r.stdout[-300:])
+        r = hand("discard", "delta")
+        step("handoff: discard segna scartato e lo toglie dall'elenco",
+             r.returncode == 0 and delta.exists()
+             and "stato: scartato" in delta.read_text(encoding="utf-8")
+             and "Handoff aperti: 0" in hand("list").stdout, r.stdout[-300:])
+
+        reset_handoff()
+        hand("new", "--title", "Senza corpo")
+        r = hand("resume")
+        step("handoff: resume di un corpo mai scritto avverte",
+             r.returncode == 0 and "corpo non e' stato scritto" in r.stdout, r.stdout[-300:])
+
+        # La pulizia conta dall'ultima modifica del file. Un aperto e non scaduto non si
+        # tocca mai, per vecchia che sia la sua ultima modifica.
+        reset_handoff()
+        for t in ("Chiuso vecchio", "Chiuso recente", "Aperto vivo", "Scaduto vecchio"):
+            hand("new", "--title", t)
+        f_cv = next((f for f in handoffs() if "chiuso-vecchio" in f.name), hdir / "assente.md")
+        f_cr = next((f for f in handoffs() if "chiuso-recente" in f.name), hdir / "assente.md")
+        f_av = next((f for f in handoffs() if "aperto-vivo" in f.name), hdir / "assente.md")
+        f_sv = next((f for f in handoffs() if "scaduto-vecchio" in f.name), hdir / "assente.md")
+        if all(f.exists() for f in (f_cv, f_cr, f_av, f_sv)):
+            hand("discard", "chiuso vecchio")
+            hand("discard", "chiuso recente")
+            retrodata(f_sv, 24 * 60)
+            quaranta = (_dt.now() - _td(days=40)).timestamp()
+            for f in (f_cv, f_av, f_sv):
+                os.utime(f, (quaranta, quaranta))
+        r = hand("prune")
+        left = {f.name for f in handoffs()}
+        step("handoff: prune toglie i chiusi e gli scaduti vecchi, non gli altri",
+             r.returncode == 0 and f_cv.name not in left and f_sv.name not in left
+             and f_cr.name in left and f_av.name in left, f"{r.stdout[-300:]} {left}")
+
+        # Un handoff di un altro branch, o con un HEAD che non e' nel tuo storico, non si
+        # riprende senza saperlo: resume dice perche' ed esce 1 senza consumarlo.
+        base = run("git", "symbolic-ref", "--short", "HEAD").stdout.strip()
+        reset_handoff()
+        hand("new", "--title", "Su base")
+        su_base = next(iter(handoffs()), hdir / "assente.md")
+        if su_base.exists():
+            riempi(su_base, "testo-su-base\n")
+        run("git", "checkout", "-q", "-b", "altro")
+        r = hand("list")
+        step("handoff: list segna l'handoff di un altro branch",
+             "altro branch" in r.stdout and "HEAD non" not in r.stdout, r.stdout[-300:])
+        r = hand("resume", "base")
+        step("handoff: resume su un altro branch avverte, esce 1 e non consuma",
+             r.returncode == 1 and "ATTENZIONE" in r.stdout and "altro branch" in r.stdout
+             and "testo-su-base" not in r.stdout and su_base.exists()
+             and "stato: aperto" in su_base.read_text(encoding="utf-8"), r.stdout[-400:])
+        r = hand("resume", "base", "--comunque")
+        step("handoff: resume --comunque lo riprende lo stesso",
+             r.returncode == 0 and "testo-su-base" in r.stdout and su_base.exists()
+             and "stato: ripreso" in su_base.read_text(encoding="utf-8"), r.stdout[-400:])
+        run("git", "commit", "-q", "--allow-empty", "-m", "commit su altro")
+        hand("new", "--title", "Su altro")
+        run("git", "checkout", "-q", base)
+        r = hand("list")
+        step("handoff: un HEAD che non e' nel tuo storico viene segnalato",
+             "HEAD non nel tuo storico" in r.stdout and "altro branch" in r.stdout,
+             r.stdout[-300:])
+        run("git", "branch", "-q", "-D", "altro")
+        reset_handoff()
+        hand("new", "--title", "Stesso branch")
+        run("git", "commit", "-q", "--allow-empty", "-m", "commit avanti")
+        r = hand("list")
+        step("handoff: sullo stesso branch un HEAD piu' avanti non e' una discordanza",
+             "Stesso branch" in r.stdout and "altro branch" not in r.stdout
+             and "HEAD non" not in r.stdout, r.stdout[-300:])
         reset_handoff()
 
         # Ogni agente del registro e' agganciato nel suo file locale, ignorato da git,
@@ -5255,6 +5383,11 @@ if __name__ == "__main__":
 #
 #     <python> .keep-fresh/scripts/handoff.py new --title "<una riga>"   crea il file e ne stampa il percorso
 #     <python> .keep-fresh/scripts/handoff.py list [--all]               gli handoff aperti; --all anche gli altri
+#     <python> .keep-fresh/scripts/handoff.py resume [n|parola] [--comunque]
+#                                                                        lo stampa e lo segna ripreso; --comunque
+#                                                                        anche se branch o HEAD non coincidono
+#     <python> .keep-fresh/scripts/handoff.py discard [n|parola]         lo segna scartato
+#     <python> .keep-fresh/scripts/handoff.py prune                      cancella i chiusi o scaduti da tempo
 #
 # Un handoff e' un file in .git/keep-fresh-handoff/ (un fatto della macchina, non del
 # repository, come context-cost.json). La meccanica sta qui; il CONTENUTO lo scrive l'agente,
@@ -5483,6 +5616,69 @@ if __name__ == "__main__":
 #     return path
 #
 #
+# def listing(items, root):
+#     return "\n".join(line(n, e, root) for n, e in enumerate(items, 1))
+#
+#
+# def select(root, arg, now, cfg):
+#     """
+#     (handoff, errore). Senza argomento va bene solo se ce n'e' uno; un numero e' la
+#     posizione nell'elenco; una parola cerca nei titoli di tutti gli aperti, scaduti
+#     compresi: uno scaduto non compare piu' da solo, ma nominandolo si riprende.
+#     """
+#     items = open_list(root, now, cfg)
+#     if arg is None:
+#         if len(items) == 1:
+#             return items[0], None
+#         if not items:
+#             return None, "Nessun handoff aperto."
+#         return None, ("Piu' di un handoff aperto: dimmi quale (numero o parola del "
+#                       "titolo).\n" + listing(items, root))
+#     if arg.isdigit():
+#         n = int(arg)
+#         if 1 <= n <= len(items):
+#             return items[n - 1], None
+#         return None, f"Nessun handoff numero {n}.\n" + (listing(items, root) or
+#                                                         "Nessun handoff aperto.")
+#     found = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"
+#              and arg.lower() in e["titolo"].lower()]
+#     if len(found) == 1:
+#         return found[0], None
+#     if not found:
+#         return None, f"Nessun handoff aperto con «{arg}» nel titolo."
+#     return None, (f"«{arg}» sta nel titolo di piu' handoff: scegline uno.\n"
+#                   + "\n".join(line(None, e, root) for e in found))
+#
+#
+# def set_state(path, state):
+#     """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
+#     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+#     changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
+#     if n == 1:
+#         path.write_text(changed, encoding="utf-8", newline="\n")
+#
+#
+# def prune(root, now, cfg):
+#     """
+#     Cancella i file chiusi (ripresi, scartati) o scaduti la cui ultima modifica e' piu'
+#     vecchia di handoff_prune_giorni. Un aperto non scaduto non si tocca mai, e un file
+#     illeggibile nemmeno: potrebbe essere stato scritto a mano. Ritorna i nomi cancellati.
+#     """
+#     _, hours, days = settings(cfg)
+#     gone = []
+#     for e in entries(root):
+#         if e["errore"] or (e["stato"] == "aperto" and not expired(e, now, hours)):
+#             continue
+#         try:
+#             modified = datetime.fromtimestamp(e["path"].stat().st_mtime).astimezone()
+#             if now - modified > timedelta(days=days):
+#                 e["path"].unlink()
+#                 gone.append(e["name"])
+#         except OSError:
+#             pass
+#     return gone
+#
+#
 # # -------------------------------------------------------------------------------- comandi
 #
 # def cmd_list(root, a, now, cfg):
@@ -5505,6 +5701,47 @@ if __name__ == "__main__":
 #     return 0
 #
 #
+# def cmd_resume(root, a, now, cfg):
+#     e, err = select(root, a.which, now, cfg)
+#     if err:
+#         print(err)
+#         return 1
+#     diverso = mismatch(root, e)
+#     if diverso and not a.comunque:
+#         print(f"ATTENZIONE: {' e '.join(diverso)} (scritto su [{e['branch']}] a "
+#               f"{e['head']}, adesso sei su [{current_branch(root)}] a "
+#               f"{core.head_sha(root) or '-'}). Non l'ho letto ne' consumato.\n"
+#               f"Dillo all'utente. Per riprenderlo comunque: handoff.py resume "
+#               f"\"{e['titolo']}\" --comunque")
+#         return 1
+#     if EMPTY_MARKER in e["corpo"]:
+#         print("ATTENZIONE: il corpo non e' stato scritto: c'e' ancora la riga di handoff "
+#               "vuoto. Chi l'ha creato non ha finito.\n")
+#     when = e["creato"].astimezone().strftime("%d/%m/%Y %H:%M")
+#     print(f"# Handoff: {e['titolo']}\nscritto il {when} su [{e['branch']}] a {e['head']}\n")
+#     print(e["corpo"].strip("\n"))
+#     set_state(e["path"], "ripreso")
+#     return 0
+#
+#
+# def cmd_discard(root, a, now, cfg):
+#     e, err = select(root, a.which, now, cfg)
+#     if err:
+#         print(err)
+#         return 1
+#     set_state(e["path"], "scartato")
+#     print(f"Scartato: {e['titolo']}")
+#     return 0
+#
+#
+# def cmd_prune(root, a, now, cfg):
+#     gone = prune(root, now, cfg)
+#     for name in gone:
+#         print(f"cancellato {name}")
+#     print(f"Pulizia: {len(gone)} file cancellati")
+#     return 0
+#
+#
 # def main(argv=None):
 #     ap = argparse.ArgumentParser(description="Gli handoff fra sessioni.")
 #     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -5512,6 +5749,13 @@ if __name__ == "__main__":
 #     p.add_argument("--title", required=True, help="una riga: il lavoro e a che punto sei")
 #     p = sub.add_parser("list", help="gli handoff aperti")
 #     p.add_argument("--all", action="store_true", help="anche chiusi e scaduti")
+#     p = sub.add_parser("resume", help="stampa un handoff e lo segna ripreso")
+#     p.add_argument("which", nargs="?", help="numero dell'elenco o parola del titolo")
+#     p.add_argument("--comunque", action="store_true",
+#                    help="anche se branch o HEAD non coincidono")
+#     p = sub.add_parser("discard", help="segna un handoff scartato")
+#     p.add_argument("which", nargs="?", help="numero dell'elenco o parola del titolo")
+#     sub.add_parser("prune", help="cancella i chiusi e gli scaduti da tempo")
 #     a = ap.parse_args(argv)
 #
 #     root = core.repo_root()
@@ -5527,7 +5771,8 @@ if __name__ == "__main__":
 #             return 1
 #         print(new(root, a.title, now))
 #         return 0
-#     return cmd_list(root, a, now, cfg)
+#     return {"list": cmd_list, "resume": cmd_resume, "discard": cmd_discard,
+#             "prune": cmd_prune}[a.cmd](root, a, now, cfg)
 #
 #
 # if __name__ == "__main__":
