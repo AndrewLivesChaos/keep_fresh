@@ -1,7 +1,7 @@
 ---
 name: keep-fresh
 disable-model-invocation: true
-argument-hint: "[status|handoff|resume]"
+argument-hint: "[status | handoff [--elenco | --scarta n] | resume [n] [--comunque]]"
 description: Use when a git repository needs agent context set up, updated or repaired - no docs/keep-fresh/context/status.md, no docs lint, missing SessionStart/Stop hooks, hooks lost after a clone, or the user mentions stale CLAUDE.md/AGENTS.md, context rot, "inizializza il contesto", "prepara il repo per gli agenti"
 ---
 
@@ -50,6 +50,8 @@ dopo `resume`.
   all'utente e chiedigli quale.
 - Se esce 1 con `ATTENZIONE` (branch o HEAD diversi da quando fu scritto), non l'ha letto ne'
   consumato: dillo all'utente e rilancia con `--comunque` solo se conferma.
+- Se l'utente ha scritto lui `--comunque` dopo `resume` (`/keep-fresh resume 2 --comunque`),
+  passalo allo script: vuol dire che sa gia' che branch o HEAD sono diversi.
 - Se esce 0 ha stampato l'handoff e l'ha segnato ripreso: lavora da quel contenuto, e
   dichiara se qualcosa non torna con lo stato attuale del repository.
 

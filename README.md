@@ -54,6 +54,29 @@ Poi `/keep-fresh` dentro il progetto da preparare. La skill è **solo manuale**
 non entra nel contesto delle sessioni, perché serve di rado. Lancia lo script sul repository della cartella
 corrente, prima a vuoto, e chiede conferma prima di scrivere. La procedura è in `SKILL.md`.
 
+### I comandi della skill
+
+Si scrivono in Claude Code, con la barra. Gli argomenti non hanno trattini davanti, salvo le
+opzioni indicate:
+
+| Comando | Cosa fa |
+|---|---|
+| `/keep-fresh` | installa o aggiorna l'impianto nel repository corrente: prova a vuoto, conferma, poi scrive |
+| `/keep-fresh status` | stato dell'impianto, in sola lettura (vedi sotto); include quanti handoff aperti ci sono |
+| `/keep-fresh handoff` | scrive l'handoff della sessione che stai chiudendo |
+| `/keep-fresh handoff --elenco` | elenca gli handoff aperti, con numero, data, branch e titolo |
+| `/keep-fresh handoff --scarta [n\|parola]` | scarta un handoff; senza argomento, solo se ce n'è uno |
+| `/keep-fresh resume [n\|parola]` | riprende un handoff; senza argomento, solo se ce n'è uno |
+| `/keep-fresh resume [n\|parola] --comunque` | lo riprende anche se è scritto su un altro branch o su un HEAD che non è nel tuo storico |
+
+`n` è il numero dell'elenco; `parola` una parola del titolo (se sta in più titoli, la skill
+li elenca e ti chiede quale). Di solito `--comunque` non lo scrivi: se `resume` si ferma per
+un branch o un HEAD diverso, l'agente te lo dice e, se rispondi di sì, rilancia lui con
+`--comunque`.
+
+`/keep-fresh status` e `--status` sono la stessa cosa: la forma con i trattini è quella dello
+script, che si lancia da terminale (vedi "Le opzioni").
+
 ## Controllare che funzioni: `--status`
 
 ```powershell
@@ -204,8 +227,8 @@ perdere il filo:
 3. Nella sessione nuova l'hook di avvio accoda **un indice** (una riga per handoff aperto,
    al massimo cinque). Non ne legge il contenuto e non agisce: se parli d'altro, lo ignora.
 4. `/keep-fresh resume [n|parola]` riprende quello che scegli. Se è scritto su un altro
-   branch o su un HEAD che non è nel tuo storico, lo dice e non lo consuma; `--comunque`
-   lo riprende lo stesso.
+   branch o su un HEAD che non è nel tuo storico, lo dice e non lo consuma;
+   `/keep-fresh resume [n|parola] --comunque` lo riprende lo stesso.
 
 Si possono avere più handoff in coda. Ognuno è `aperto`, poi `ripreso` o `scartato`
 (`/keep-fresh handoff --scarta [n|parola]`); oltre `handoff_ore` (48 di partenza) non
@@ -214,7 +237,8 @@ di `handoff_prune_giorni` (30) si cancellano da soli all'avvio. Le tre chiavi st
 `[context]` di `config.toml`, commentate con il loro valore.
 
 Gli handoff sono **locali**: stanno in `.git/`, non finiscono in un commit e non passano
-da una macchina all'altra. `--status` dice quanti ce ne sono.
+da una macchina all'altra. `/keep-fresh status` dice quanti ce ne sono, `/keep-fresh handoff
+--elenco` li mostra uno per uno.
 
 - **provato:** Windows, con i collaudi di `--pack`: ciclo `new` → `resume`, indice, soglia,
   scadenza, pulizia, branch diverso, repository senza commit, file rotti;
@@ -367,6 +391,26 @@ che non girano.
 | `--pack` | solo in questo repository: rigenera il payload da `payload/` |
 | `--self-test` | verifica che il payload sia leggibile e coincida col timbro, ed esce |
 | `--version` | dice da dove e quando viene questa copia ed esce |
+| `--status` | stato dell'impianto in sola lettura (è `/keep-fresh status`); esce 1 se c'è qualcosa da sistemare |
+
+### Gli handoff da terminale: `.keep-fresh/scripts/handoff.py`
+
+È lo script che la skill usa per `handoff` e `resume`. Si lancia dal repository (`python3` su
+macOS/Linux), e serve solo se vuoi gestire gli handoff senza passare dall'agente:
+
+| Comando | Cosa fa |
+|---|---|
+| `handoff.py new --title "..."` | crea il file con i metadati di adesso e ne stampa il percorso; il corpo lo scrive l'agente |
+| `handoff.py list` | gli handoff aperti e non scaduti, branch corrente per primo; segnala i file illeggibili |
+| `handoff.py list --all` | anche quelli ripresi, scartati o scaduti |
+| `handoff.py resume [n\|parola]` | stampa l'handoff e lo segna ripreso; esce 1 se la scelta è ambigua o se branch/HEAD non coincidono |
+| `handoff.py resume [n\|parola] --comunque` | lo riprende anche con branch o HEAD diversi |
+| `handoff.py discard [n\|parola]` | lo segna scartato |
+| `handoff.py prune` | cancella ripresi, scartati e scaduti più vecchi di `handoff_prune_giorni` (gira già da sola all'avvio) |
+
+Corrispondenza con la skill: `handoff` → `new` + il corpo scritto dall'agente; `handoff
+--elenco` → `list`; `handoff --scarta` → `discard`; `resume` → `resume`. `prune` e `list --all`
+non hanno un comando della skill.
 
 ## Se qualcosa non torna
 
