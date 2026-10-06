@@ -36,6 +36,7 @@ ad "assente", mai a "bloccante". Per questo esiste la traccia .git/agent-hooks.l
 l'unico modo di sapere se gli hook girano.
 """
 
+import hashlib
 import io
 import json
 import re
@@ -296,7 +297,10 @@ def prompt(data: dict) -> int:
     if call is None:
         log("Prompt", "ok (nessuna chiamata precedente)")
         return 0
-    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or "ignota")) or "ignota"
+    # Senza session_id i marcatori si legano alla trascrizione, che e' per sessione: con un
+    # nome fisso il primo avviso varrebbe per tutte le sessioni future.
+    sid = (re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or ""))
+           or "t" + hashlib.sha1(str(tp).encode("utf-8")).hexdigest()[:12])
     parts, flags, kinds = [], [], []
     if msg is not None:
         # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi

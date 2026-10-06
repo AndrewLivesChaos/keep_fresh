@@ -275,8 +275,13 @@ def select(root, arg, now, cfg):
             return items[n - 1], None
         return None, f"Nessun handoff numero {n}.\n" + (listing(items, root) or
                                                         "Nessun handoff aperto.")
-    found = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"
-             and arg.lower() in e["titolo"].lower()]
+    live = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"]
+    # Il nome del file e' univoco anche quando il titolo non lo e' (due titoli uno dentro
+    # l'altro, solo cifre, virgolette): e' quello che resume suggerisce per --comunque.
+    by_name = [e for e in live if arg in (e["name"], e["path"].stem)]
+    if len(by_name) == 1:
+        return by_name[0], None
+    found = [e for e in live if arg.lower() in e["titolo"].lower()]
     if len(found) == 1:
         return found[0], None
     if not found:
@@ -286,11 +291,22 @@ def select(root, arg, now, cfg):
 
 
 def set_state(path, state):
-    """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
+    """
+    Cambia lo stato nell'intestazione, e solo li': una riga `stato:` nel corpo non si tocca.
+    Come `parse`, accetta chiavi rientrate e le ripetute (vale l'ultima: le cambia tutte).
+    Riscrive in UTF-8 senza BOM. Ritorna False, senza scrivere, se non trova lo stato.
+    """
     text = read_text(path)
-    changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
-    if n == 1:
-        path.write_text(changed, encoding="utf-8", newline="\n")
+    m = META_RE.match(text)
+    if not m:
+        return False
+    head, n = re.subn(r"^([ \t]*)stato:.*$",
+                      lambda k: f"{k.group(1)}stato: {state}", m.group(1), flags=re.M)
+    if not n:
+        return False
+    path.write_text("---\n" + head + "\n---\n" + text[m.end():], encoding="utf-8",
+                    newline="\n")
+    return True
 
 
 def prune(root, now, cfg):
@@ -347,7 +363,11 @@ def cmd_resume(root, a, now, cfg):
               f"{e['head']}, adesso sei su [{current_branch(root)}] a "
               f"{core.head_sha(root) or '-'}). Non l'ho letto ne' consumato.\n"
               f"Dillo all'utente. Per riprenderlo comunque: handoff.py resume "
-              f"\"{e['titolo']}\" --comunque")
+              f"{e['path'].stem} --comunque")
+        return 1
+    if not set_state(e["path"], "ripreso"):
+        print(f"Non riesco a segnare ripreso l'handoff {e['name']}: l'intestazione non "
+              f"ha una riga di stato leggibile. Non l'ho letto.")
         return 1
     if EMPTY_MARKER in e["corpo"]:
         print("ATTENZIONE: il corpo non e' stato scritto: c'e' ancora la riga di handoff "
@@ -355,7 +375,6 @@ def cmd_resume(root, a, now, cfg):
     when = e["creato"].astimezone().strftime("%d/%m/%Y %H:%M")
     print(f"# Handoff: {e['titolo']}\nscritto il {when} su [{e['branch']}] a {e['head']}\n")
     print(e["corpo"].strip("\n"))
-    set_state(e["path"], "ripreso")
     return 0
 
 
@@ -364,7 +383,10 @@ def cmd_discard(root, a, now, cfg):
     if err:
         print(err)
         return 1
-    set_state(e["path"], "scartato")
+    if not set_state(e["path"], "scartato"):
+        print(f"Non riesco a segnare scartato l'handoff {e['name']}: l'intestazione non "
+              f"ha una riga di stato leggibile.")
+        return 1
     print(f"Scartato: {e['titolo']}")
     return 0
 

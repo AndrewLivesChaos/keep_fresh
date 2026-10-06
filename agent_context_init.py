@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T12:06:45',
+    'packed_at': '2026-10-06T13:15:11',
     'source': 'keep_fresh',
-    'commit': 'efc5b47',
-    'payload_dirty': False,
-    'payload_sha': '5d444b1d0f62',
+    'commit': 'ac99ee9',
+    'payload_dirty': True,
+    'payload_sha': '5d6153f7f535',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -659,6 +659,17 @@ def smoke_test() -> bool:
              r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
         cfg_p.write_text(cfg_attuale, encoding="utf-8")
 
+        # Senza session_id l'avviso dell'handoff non puo' essere "una volta in assoluto":
+        # il marcatore si lega alla trascrizione, che e' per sessione.
+        ta = transcript("t-nosid-a.jsonl", 0.2, 200_000)
+        tb = transcript("t-nosid-b.jsonl", 0.2, 200_000)
+        ra1 = prompt_hook(ta, sid="")
+        ra2 = prompt_hook(ta, sid="")
+        rb1 = prompt_hook(tb, sid="")
+        step("prompt: senza session_id l'avviso dell'handoff e' una volta per trascrizione",
+             blocked(ra1) and not ra2.stdout.strip() and blocked(rb1),
+             f"{ra1.stdout[-200:]}|{ra2.stdout[-200:]}|{rb1.stdout[-200:]}")
+
         # Gli handoff: la coda in .git/keep-fresh-handoff/, un file ciascuno. Ogni blocco
         # riparte da una cartella vuota, cosi' non dipendono l'uno dall'altro.
         hdir = tmp / ".git" / "keep-fresh-handoff"
@@ -957,6 +968,46 @@ def smoke_test() -> bool:
              not vecchio.exists() and len(handoffs()) == 1, f"{[f.name for f in handoffs()]}")
         reset_handoff()
 
+        # Il comando che resume suggerisce per --comunque deve funzionare sempre: i titoli
+        # possono avere virgolette, essere solo cifre o stare dentro un altro titolo.
+        base = run("git", "symbolic-ref", "--short", "HEAD").stdout.strip()
+        reset_handoff()
+        titoli = ("Fix", "Fix test", "42", 'Disse "ciao"')
+        for t in titoli:
+            hand("new", "--title", t)
+        for f in handoffs():
+            riempi(f, f"testo-{f.stem}\n")
+        run("git", "checkout", "-q", "-b", "altro2")
+        for t in titoli:
+            r = hand("resume", "1")
+            m = re.search(r"resume (\S+) --comunque", r.stdout)
+            r2 = hand("resume", m.group(1), "--comunque") if m else r
+            step(f"handoff: il comando suggerito per --comunque funziona (titolo {t!r})",
+                 r.returncode == 1 and bool(m) and r2.returncode == 0
+                 and f"testo-{m.group(1)}" in r2.stdout,
+                 f"{r.stdout[-300:]}|{r2.stdout[-200:]}{r2.stderr[-200:]}")
+        r = hand("list", "--all")
+        step("handoff: i quattro suggeriti sono stati ripresi, ciascuno una volta",
+             r.stdout.count("ripreso") == 4, r.stdout[-400:])
+        run("git", "checkout", "-q", base)
+        run("git", "branch", "-q", "-D", "altro2")
+        reset_handoff()
+
+        # set_state tocca la riga di stato dell'intestazione, anche se rientrata, e non una
+        # riga uguale nel corpo.
+        hand("new", "--title", "Ritoccato a mano")
+        for f in handoffs()[:1]:
+            t = f.read_text(encoding="utf-8")
+            t = t.replace("stato: aperto\n---\n", "  stato: aperto\n---\n", 1)
+            f.write_text(t + "\nstato: finto\n", encoding="utf-8", newline="\n")
+        r = hand("resume")
+        testo = next(iter(handoffs()), hdir / "assente.md").read_text(encoding="utf-8")
+        step("handoff: resume cambia lo stato nell'intestazione, non una riga uguale nel corpo",
+             r.returncode == 0
+             and re.search(r"^[ \t]*stato: ripreso$", testo.split("\n---\n")[0], re.M)
+             and "\nstato: finto" in testo, f"exit {r.returncode}: {r.stdout[-200:]} {testo[:300]}")
+        reset_handoff()
+
         # Un handoff ritoccato dalla shell di Windows: Set-Content -Encoding utf8 mette il
         # BOM, Out-File di PowerShell 5.1 scrive UTF-16. Non devono sparire in silenzio.
         reset_handoff()
@@ -984,10 +1035,13 @@ def smoke_test() -> bool:
 
         # --status riporta gli handoff aperti, senza scrivere niente.
         hand("new", "--title", "Per lo stato")
+        (hdir / "rotto.md").write_text("niente intestazione\n", encoding="utf-8")
         prima = snap()
         r = run(*init, "--status")
         step("--status riporta gli handoff aperti",
              "handoff" in r.stdout and "Handoff aperti: 1" in r.stdout, r.stdout[-700:])
+        step("--status mette i file illeggibili fra le cose da sistemare",
+             r.stdout.count("rotto.md") >= 2 and "da sistemare" in r.stdout, r.stdout[-900:])
         step("--status con un handoff aperto e' ancora di sola lettura",
              not cambiati(prima), f"{cambiati(prima)}")
         reset_handoff()
@@ -2310,9 +2364,17 @@ def status(root: Path, payload: dict) -> int:
         r = subprocess.run([sys.executable, str(hand), "list"], cwd=str(root),
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", env=env)
-        prima_riga = (r.stdout.splitlines() or [""])[0]
+        righe = r.stdout.splitlines()
+        prima_riga = (righe or [""])[0]
+        rotti = [l.strip() for l in righe[1:] if l.lstrip().startswith("! ")]
         if r.returncode == 0 and prima_riga:
-            riga("OK", "handoff", f"{prima_riga} (.git/keep-fresh-handoff/)")
+            riga("!!" if rotti else "OK", "handoff",
+                 f"{prima_riga} (.git/keep-fresh-handoff/)")
+            for l in righe[1:9]:
+                print(f"{'':<26}{l.strip()}")
+            if rotti:
+                problemi.append(f"{len(rotti)} handoff illeggibili in .git/keep-fresh-handoff/ "
+                                f"(ignorati, non compaiono nell'indice): {'; '.join(rotti)}")
         else:
             riga("!!", "handoff", "handoff.py list non risponde")
             problemi.append(f"`{interp} {HANDOFF_SCRIPT} list` esce con errore: lancialo "
@@ -3466,6 +3528,7 @@ if __name__ == "__main__":
 # l'unico modo di sapere se gli hook girano.
 # """
 #
+# import hashlib
 # import io
 # import json
 # import re
@@ -3726,7 +3789,10 @@ if __name__ == "__main__":
 #     if call is None:
 #         log("Prompt", "ok (nessuna chiamata precedente)")
 #         return 0
-#     sid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or "ignota")) or "ignota"
+#     # Senza session_id i marcatori si legano alla trascrizione, che e' per sessione: con un
+#     # nome fisso il primo avviso varrebbe per tutte le sessioni future.
+#     sid = (re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("session_id") or ""))
+#            or "t" + hashlib.sha1(str(tp).encode("utf-8")).hexdigest()[:12])
 #     parts, flags, kinds = [], [], []
 #     if msg is not None:
 #         # Un avviso per pausa: il marcatore e' legato all'ora dell'ultima chiamata, quindi
@@ -5923,8 +5989,13 @@ if __name__ == "__main__":
 #             return items[n - 1], None
 #         return None, f"Nessun handoff numero {n}.\n" + (listing(items, root) or
 #                                                         "Nessun handoff aperto.")
-#     found = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"
-#              and arg.lower() in e["titolo"].lower()]
+#     live = [e for e in entries(root) if not e["errore"] and e["stato"] == "aperto"]
+#     # Il nome del file e' univoco anche quando il titolo non lo e' (due titoli uno dentro
+#     # l'altro, solo cifre, virgolette): e' quello che resume suggerisce per --comunque.
+#     by_name = [e for e in live if arg in (e["name"], e["path"].stem)]
+#     if len(by_name) == 1:
+#         return by_name[0], None
+#     found = [e for e in live if arg.lower() in e["titolo"].lower()]
 #     if len(found) == 1:
 #         return found[0], None
 #     if not found:
@@ -5934,11 +6005,22 @@ if __name__ == "__main__":
 #
 #
 # def set_state(path, state):
-#     """Cambia lo stato nell'intestazione, e solo li': e' la prima riga `stato:` del file."""
+#     """
+#     Cambia lo stato nell'intestazione, e solo li': una riga `stato:` nel corpo non si tocca.
+#     Come `parse`, accetta chiavi rientrate e le ripetute (vale l'ultima: le cambia tutte).
+#     Riscrive in UTF-8 senza BOM. Ritorna False, senza scrivere, se non trova lo stato.
+#     """
 #     text = read_text(path)
-#     changed, n = re.subn(r"^stato:.*$", f"stato: {state}", text, count=1, flags=re.M)
-#     if n == 1:
-#         path.write_text(changed, encoding="utf-8", newline="\n")
+#     m = META_RE.match(text)
+#     if not m:
+#         return False
+#     head, n = re.subn(r"^([ \t]*)stato:.*$",
+#                       lambda k: f"{k.group(1)}stato: {state}", m.group(1), flags=re.M)
+#     if not n:
+#         return False
+#     path.write_text("---\n" + head + "\n---\n" + text[m.end():], encoding="utf-8",
+#                     newline="\n")
+#     return True
 #
 #
 # def prune(root, now, cfg):
@@ -5995,7 +6077,11 @@ if __name__ == "__main__":
 #               f"{e['head']}, adesso sei su [{current_branch(root)}] a "
 #               f"{core.head_sha(root) or '-'}). Non l'ho letto ne' consumato.\n"
 #               f"Dillo all'utente. Per riprenderlo comunque: handoff.py resume "
-#               f"\"{e['titolo']}\" --comunque")
+#               f"{e['path'].stem} --comunque")
+#         return 1
+#     if not set_state(e["path"], "ripreso"):
+#         print(f"Non riesco a segnare ripreso l'handoff {e['name']}: l'intestazione non "
+#               f"ha una riga di stato leggibile. Non l'ho letto.")
 #         return 1
 #     if EMPTY_MARKER in e["corpo"]:
 #         print("ATTENZIONE: il corpo non e' stato scritto: c'e' ancora la riga di handoff "
@@ -6003,7 +6089,6 @@ if __name__ == "__main__":
 #     when = e["creato"].astimezone().strftime("%d/%m/%Y %H:%M")
 #     print(f"# Handoff: {e['titolo']}\nscritto il {when} su [{e['branch']}] a {e['head']}\n")
 #     print(e["corpo"].strip("\n"))
-#     set_state(e["path"], "ripreso")
 #     return 0
 #
 #
@@ -6012,7 +6097,10 @@ if __name__ == "__main__":
 #     if err:
 #         print(err)
 #         return 1
-#     set_state(e["path"], "scartato")
+#     if not set_state(e["path"], "scartato"):
+#         print(f"Non riesco a segnare scartato l'handoff {e['name']}: l'intestazione non "
+#               f"ha una riga di stato leggibile.")
+#         return 1
 #     print(f"Scartato: {e['titolo']}")
 #     return 0
 #
