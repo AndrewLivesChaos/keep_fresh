@@ -30,11 +30,16 @@ l'inizializzazione con `--force`.
 1. Esegui `python .keep-fresh/scripts/handoff.py new --title "<una riga>"` (`python3` su
    macOS/Linux). Il titolo e' cio' che l'utente vedra' nell'elenco: il lavoro e a che punto
    sei, non "handoff".
-2. Scrivi il corpo nel file che lo script ha stampato, nelle sezioni che trovi gia' li
+2. **Prima di scrivere, rileggi le fonti**: `status.md`, i piani e gli elenchi di cose da fare
+   del progetto (cerca anche `docs/`, TODO, checklist). Per "Ancora da fare" copia ogni voce
+   aperta da li', una per una, con il suo riferimento (sezione, riga); non ricostruirla dalla
+   conversazione e non riassumere "restano A, B e C". Se una voce e' chiusa o cambiata,
+   dillo. Confronta alla fine l'elenco con la fonte: nessuna voce aperta deve mancare.
+3. Scrivi il corpo nel file che lo script ha stampato, nelle sezioni che trovi gia' li
    (obiettivo, fatto, decisioni, cosa non ha funzionato, prossimo passo, file e stato git),
    e **cancella la riga `<!-- handoff-vuoto ... -->`**. Il modello e' in
    `.keep-fresh/guide.md`. Niente credenziali, chiavi, token.
-3. Di' all'utente il percorso e che ora puo' fare `/clear` o aprire una sessione nuova: lo
+4. Di' all'utente il percorso e che ora puo' fare `/clear` o aprire una sessione nuova: lo
    vedra' li' in elenco, e lo riprende con `/keep-fresh resume`. Non committare.
 
 Con `handoff --elenco` esegui solo `handoff.py list`; con `handoff --scarta [n|parola]`,

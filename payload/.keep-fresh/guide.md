@@ -563,6 +563,10 @@ scrivere un handoff e cambiare sessione. **Lo scrivi tu**, con
   parte che chi riprende non puo' ricostruire dal codice.
 - **Non ha funzionato**: i vicoli ciechi, con il motivo. E' la sezione che fa risparmiare
   piu' tempo.
+- **Ancora da fare**: l'elenco **completo** di cio' che resta, **copiato voce per voce da
+  `status.md`, dai piani e dai TODO**, con il riferimento (sezione o riga). Non dalla
+  memoria della sessione e non come riassunto: una voce lasciata fuori e' una voce persa,
+  perche' chi riprende si fida dell'elenco. Prima di chiudere rileggi la fonte e confronta.
 - **Prossimo passo**: la prima cosa da fare, concreta. Chi riprende parte da qui.
 - **File e stato git**: cosa e' toccato, cosa non e' committato, su quale branch.
 

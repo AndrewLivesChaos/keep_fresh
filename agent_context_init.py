@@ -64,11 +64,11 @@ FILE_END = " ----"
 # diverse sono indistinguibili finche' non si confronta il contenuto a mano.
 # ==== TIMBRO (scritto da --pack) ====
 STAMP = {
-    'packed_at': '2026-10-06T13:15:50',
+    'packed_at': '2026-10-07T11:51:47',
     'source': 'keep_fresh',
-    'commit': 'ac21716',
-    'payload_dirty': False,
-    'payload_sha': '5d6153f7f535',
+    'commit': '0c2c1db',
+    'payload_dirty': True,
+    'payload_sha': '0c70b3023369',
 }
 # ==== TIMBRO (fine) ====
 STAMP_RE = re.compile(r"^# ==== TIMBRO \(scritto da --pack\) ====\n.*?"
@@ -3336,6 +3336,10 @@ if __name__ == "__main__":
 #   parte che chi riprende non puo' ricostruire dal codice.
 # - **Non ha funzionato**: i vicoli ciechi, con il motivo. E' la sezione che fa risparmiare
 #   piu' tempo.
+# - **Ancora da fare**: l'elenco **completo** di cio' che resta, **copiato voce per voce da
+#   `status.md`, dai piani e dai TODO**, con il riferimento (sezione o riga). Non dalla
+#   memoria della sessione e non come riassunto: una voce lasciata fuori e' una voce persa,
+#   perche' chi riprende si fida dell'elenco. Prima di chiudere rileggi la fonte e confronta.
 # - **Prossimo passo**: la prima cosa da fare, concreta. Chi riprende parte da qui.
 # - **File e stato git**: cosa e' toccato, cosa non e' committato, su quale branch.
 #
@@ -5777,6 +5781,10 @@ if __name__ == "__main__":
 #
 # ## Non ha funzionato
 # (i vicoli ciechi: chi riprende non deve ripercorrerli)
+#
+# ## Ancora da fare
+# (l'elenco COMPLETO di cio' che resta, voce per voce, preso da status.md, piani e TODO del
+# progetto e non dalla memoria: ogni voce aperta compare qui, anche se non e' per ora)
 #
 # ## Prossimo passo
 # (la prima cosa da fare, concreta)

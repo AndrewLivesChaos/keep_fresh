@@ -64,6 +64,10 @@ BODY_TEMPLATE = f"""{EMPTY_MARKER}
 ## Non ha funzionato
 (i vicoli ciechi: chi riprende non deve ripercorrerli)
 
+## Ancora da fare
+(l'elenco COMPLETO di cio' che resta, voce per voce, preso da status.md, piani e TODO del
+progetto e non dalla memoria: ogni voce aperta compare qui, anche se non e' per ora)
+
 ## Prossimo passo
 (la prima cosa da fare, concreta)
 
