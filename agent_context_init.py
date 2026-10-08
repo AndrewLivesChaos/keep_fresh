@@ -637,6 +637,17 @@ def smoke_test() -> bool:
         r = prompt_hook(tmp / ".git" / "t-hand.jsonl", "/keep-fresh handoff", sid="h3")
         step("prompt: /keep-fresh handoff passa sempre, anche sopra la soglia",
              r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
+        notifica = ("<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n"
+                    "<result>fatto</result>\n</task-notification>")
+        r = prompt_hook(tmp / ".git" / "t-hand.jsonl", notifica, sid="h8")
+        step("prompt: il risultato di un sotto-agente (<task-notification>) passa sempre",
+             r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])
+        r = prompt_hook(tmp / ".git" / "t-hand.jsonl", sid="h8")
+        step("prompt: la notifica lasciata passare non consuma l'avviso dell'utente",
+             r.returncode == 0 and blocked(r), r.stdout[-300:])
+        r = prompt_hook(tmp / ".git" / "t-hand.jsonl", "<b>grassetto</b> continua", sid="h9")
+        step("prompt: un testo che inizia con un tag senza trattino si ferma come gli altri",
+             r.returncode == 0 and blocked(r), r.stdout[-300:])
         r = prompt_hook(transcript("t-hand-small.jsonl", 0.2, 100_000), sid="h4")
         step("prompt: sotto la soglia dell'handoff non ferma",
              r.returncode == 0 and not r.stdout.strip(), r.stdout[-300:])

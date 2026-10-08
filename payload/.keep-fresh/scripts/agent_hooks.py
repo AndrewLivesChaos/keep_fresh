@@ -26,6 +26,8 @@ il protocollo usato e' quello che gli agenti supportati hanno in comune.
                  grande, lo ferma UNA volta e dice quanto costa riprendere. Lo ferma una
                  volta anche quando il contesto supera handoff_warn_tokens, e propone
                  l'handoff. Reinviato, passa. Soglie in [context] di config.toml.
+                 Non ferma mai i messaggi che l'agente genera da se', come il
+                 risultato di un sotto-agente (<task-notification>).
 
 Perche' JSON e non l'uscita 2: provato il 2026-09-17 su Windows, Codex 0.154.0 tratta
 l'uscita 2 di Stop come un errore e chiude comunque; la decisione JSON con uscita 0
@@ -247,6 +249,15 @@ HANDOFF_MESSAGE = """Il contesto di questa sessione e' di {ctx} token (soglia {w
 - Se ti serve tutto questo contesto: reinvia lo stesso messaggio, non ti fermo una seconda volta in questa sessione."""
 
 
+# Non tutto quello che passa da UserPromptSubmit l'ha scritto l'utente: Claude Code ci fa
+# passare anche i messaggi che genera lui, per esempio il risultato di un sotto-agente in
+# background (<task-notification>). Fermarlo non lo rimanda: il risultato si perde e chi lo
+# aspettava resta senza (visto il 2026-10-08 su Windows, Claude Code, sotto-agenti di
+# superpowers). Questi messaggi iniziano con un tag minuscolo con il trattino; un testo
+# incollato dall'utente che inizia cosi' perde al massimo un avviso.
+HARNESS_TAG = re.compile(r"\s*<([a-z]+(?:-[a-z]+)+)[\s>]")
+
+
 def handoff_notice(call, cfg, g, sid):
     """(testo, marcatore) se il contesto supera la soglia e in questa sessione non l'ho detto."""
     if handoff is None or g is None:
@@ -274,7 +285,8 @@ def prompt(data: dict) -> int:
     Se scattano insieme, parte un solo messaggio che li dice entrambi. Il messaggio fermato
     non arriva al modello e non costa niente. Reinviato, passa. I comandi che iniziano con
     / passano sempre: fermare un /clear o un /keep-fresh handoff sarebbe fermare proprio il
-    rimedio.
+    rimedio. Passano sempre anche i messaggi generati dall'agente (HARNESS_TAG): nessuno li
+    reinvierebbe.
 
     Il formato che ferma e' {"decision": "block", "reason": ...}: provato il 2026-09-28
     su Claude Code 2.1.283 (zero chiamate al modello, il motivo e il messaggio originale
@@ -285,6 +297,10 @@ def prompt(data: dict) -> int:
     text = str(data.get("prompt") or data.get("prompt_text") or "")
     if text.lstrip().startswith("/"):
         log("Prompt", "ok (comando /)")
+        return 0
+    m = HARNESS_TAG.match(text)
+    if m:
+        log("Prompt", f"ok (messaggio dell'agente <{m.group(1)}>, non dell'utente)")
         return 0
     tp = data.get("transcript_path")
     if not tp or not Path(tp).is_file():
