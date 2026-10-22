@@ -13,7 +13,8 @@ Per ogni progetto trovato sotto la radice:
   - toglie .keep-fresh/scripts/, .keep-fresh/guide.md, .keep-fresh/version.json;
   - dai file di aggancio (.claude/settings.local.json, .codex/hooks.json) toglie SOLO gli
     hook di keep-fresh; il resto resta com'era, e un file rimasto vuoto si toglie;
-  - da .gitignore toglie la riga di un file di aggancio solo se toglie quel file;
+  - da .gitignore toglie la riga di .codex/hooks.json se toglie quel file (quella di
+    .claude/settings.local.json resta: Claude Code ricrea il file);
   - nei documenti .md tracciati sostituisce i comandi degli script con i comandi della
     skill (/keep-fresh:lint, /keep-fresh:handoff...) e i percorsi con keep-fresh:scripts/.
 
@@ -39,6 +40,7 @@ import kf_init  # noqa: E402
 REMOVE = (".keep-fresh/scripts", ".keep-fresh/guide.md", ".keep-fresh/version.json")
 HOOK_FILES = (".claude/settings.local.json", ".codex/hooks.json")
 OUR_HOOK = ".keep-fresh/scripts/agent_hooks.py"
+KEEP_IGNORED = {".claude/settings.local.json"}
 SKIP_DIRS = {"node_modules", "__pycache__"}
 
 INTERP = r"(?:<python>|python3?|py(?:\s+-3)?)\s+(?:\./)?"
@@ -213,7 +215,9 @@ def plan_project(project: Path) -> ProjectPlan:
             plan.contents[rel] = None if not new else json.dumps(new, indent=2,
                                                                   ensure_ascii=False) + "\n"
 
-    gone = {h.file for h in plan.hook_edits if h.delete_file}
+    # La riga di .claude/settings.local.json resta comunque: Claude Code ricrea quel file
+    # quando si approva un permesso, e senza la riga finirebbe in un commit.
+    gone = {h.file for h in plan.hook_edits if h.delete_file} - KEEP_IGNORED
     gi = project / ".gitignore"
     if gone and gi.is_file():
         lines = gi.read_text(encoding="utf-8").splitlines(keepends=True)

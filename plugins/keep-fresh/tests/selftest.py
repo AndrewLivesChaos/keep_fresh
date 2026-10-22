@@ -1226,6 +1226,15 @@ def test_review_fixes():
          _blocks(rc, "") and not rx.stdout.strip()
          and "ceduto al vecchio impianto" in hook_log(p), f"{rc.stdout[-200:]} | {hook_log(p)}")
 
+    # La riga di .claude/settings.local.json resta in .gitignore anche se il file sparisce:
+    # Claude Code lo ricrea (permessi approvati) e non deve finire in un commit.
+    p = old_project(tmpdir("kf-projects-"), "gi")
+    shutil.copyfile(p / ".codex" / "hooks.json", p / ".claude" / "settings.local.json")
+    plan = mig.plan_project(p)
+    step("migrate: la riga .claude/settings.local.json resta in .gitignore",
+         ".claude/settings.local.json" not in plan.gitignore_lines
+         and ".codex/hooks.json" in plan.gitignore_lines, str(plan.gitignore_lines))
+
     # 7. Il lanciatore e' eseguibile per git: su macOS/Linux si lancia per percorso.
     r = run("git", "ls-files", "-s", "plugins/keep-fresh/hooks/run-hook.cmd", cwd=REPO)
     step("run-hook.cmd e' eseguibile (100755) nel repo", r.stdout.startswith("100755"),
