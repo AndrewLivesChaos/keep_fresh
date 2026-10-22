@@ -1147,7 +1147,7 @@ def test_skills():
 # cedergli il passo, lo descrivono come passato, o lo provano. Ovunque altrove sarebbe un
 # rimando al vecchio posto del codice.
 OLD_PATH_ALLOWED = (
-    "docs/superpowers/", "README.md",
+    "docs/superpowers/", "README.md", "README.en.md",
     "plugins/keep-fresh/scripts/migrate.py", "plugins/keep-fresh/scripts/context_core.py",
     "plugins/keep-fresh/scripts/kf_init.py", "plugins/keep-fresh/scripts/agent_hooks.py",
     "plugins/keep-fresh/tests/selftest.py",
