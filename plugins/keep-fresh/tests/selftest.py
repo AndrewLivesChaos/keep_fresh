@@ -116,7 +116,8 @@ def test_manifests():
     claude = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     codex = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text("utf-8"))
     step("manifesti: la versione e' la stessa per Claude Code e Codex",
-         claude.get("version") == codex.get("version") == "1.0.0",
+         claude.get("version") == codex.get("version")
+         and re.fullmatch(r"\d+\.\d+\.\d+", str(claude.get("version"))) is not None,
          f"claude={claude.get('version')!r} codex={codex.get('version')!r}")
 
     entries = []
