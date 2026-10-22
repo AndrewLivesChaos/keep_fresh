@@ -3,9 +3,9 @@
 """
 agent_hooks — il livello che esegue invece di chiedere, uguale per ogni agente.
 
-    <python> .keep-fresh/scripts/agent_hooks.py session-start --agent <nome>
-    <python> .keep-fresh/scripts/agent_hooks.py stop          --agent <nome>
-    <python> .keep-fresh/scripts/agent_hooks.py prompt        --agent <nome>
+    <python> <plugin>/scripts/agent_hooks.py session-start --agent <nome>
+    <python> <plugin>/scripts/agent_hooks.py stop          --agent <nome>
+    <python> <plugin>/scripts/agent_hooks.py prompt        --agent <nome>
 
 Lo invoca l'agente stesso, attraverso il suo meccanismo di hook. L'aggancio e' l'unica
 parte specifica dell'agente (e della macchina), e lo scrive agent_context_init.py nella
@@ -120,7 +120,7 @@ def read_input() -> dict:
 
 def session_start(data: dict) -> int:
     if core is None:
-        log("SessionStart", ".keep-fresh/scripts/context_core.py non trovato: niente da iniettare")
+        log("SessionStart", "context_core.py non trovato accanto a questo script: niente da iniettare")
         return 0
     root = core.repo_root()
     if root is None:
@@ -132,7 +132,7 @@ def session_start(data: dict) -> int:
     else:
         text = inj["text"]
         print(text)
-        # Il formato di questa riga lo legge .keep-fresh/scripts/context_cost.py: "iniettati N caratteri".
+        # Il formato di questa riga lo legge scripts/context_cost.py: "iniettati N caratteri".
         ridotto = (f", RIDOTTO a indice: blocchi={inj['blocks_chars']} > tetto={inj['budget']}"
                    if inj["reduced"] else "")
         log("SessionStart", f"iniettati {len(text)} caratteri "
@@ -180,7 +180,7 @@ Questo controllo blocca una volta sola per sessione: non ripartira'."""
 
 def stop(data: dict) -> int:
     if core is None:
-        log("Stop", ".keep-fresh/scripts/context_core.py non trovato: nessun controllo")
+        log("Stop", "context_core.py non trovato accanto a questo script: nessun controllo")
         return 0
     # L'agente ha gia' continuato una volta per un hook di fine turno: non si insiste.
     if data.get("stop_hook_active") is True:
@@ -361,6 +361,17 @@ def main(argv) -> int:
         return 0
     name, fn = EVENTS[args[0]]
     try:
+        # Gli hook del plugin partono in ogni sessione, in ogni cartella: dove keep-fresh
+        # non c'e' escono senza una parola e senza scrivere niente, nemmeno la traccia.
+        root = core.repo_root() if core is not None else None
+        if not (core is not None and core.uses_keep_fresh(root)):
+            return 0
+        # Finche' il progetto non e' migrato lavora la sua copia vecchia: due impianti
+        # darebbero ogni avviso due volte. La copia vecchia sta dentro il progetto e non
+        # cede mai; cede solo questa, che sta nel plugin.
+        if core.old_install(root) and root.resolve() not in Path(__file__).resolve().parents:
+            log(name, "ceduto al vecchio impianto in .keep-fresh/scripts")
+            return 0
         return fn(read_input())
     except Exception as exc:                      # fail-open, sempre
         log(name, f"ERRORE INTERNO {type(exc).__name__} (fail-open, nessun blocco)")

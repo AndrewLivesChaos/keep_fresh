@@ -3,11 +3,11 @@
 """
 context_cost — quanto pesa il contesto di questo repository, misurato.
 
-    <python> .keep-fresh/scripts/context_cost.py                resoconto; non chiama nessun modello
-    <python> .keep-fresh/scripts/context_cost.py misura         misura ESATTA dei token che questo
+    <python> <plugin>/scripts/context_cost.py                resoconto; non chiama nessun modello
+    <python> <plugin>/scripts/context_cost.py misura         misura ESATTA dei token che questo
                                                   impianto aggiunge a ogni sessione
-    <python> .keep-fresh/scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
-    <python> .keep-fresh/scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
+    <python> <plugin>/scripts/context_cost.py --giorni 30    solo le sessioni degli ultimi 30 giorni
+    <python> <plugin>/scripts/context_cost.py --anche <dir>  conta anche le sessioni aperte in <dir>
                                                   (il vecchio percorso di un repo spostato)
 
 Ogni numero dice da dove viene:
@@ -497,10 +497,10 @@ def report(root: Path, extra, giorni, as_json):
     elif measure:
         print(f"  L'ultima misura ({measure['date']}) e' di contenuti diversi da quelli di "
               f"oggi: token stimati con il suo rapporto, {cpt:.2f} caratteri/token.")
-        print(f"  Per il valore esatto: {core.PY} .keep-fresh/scripts/context_cost.py misura")
+        print(f"  Per il valore esatto: {core.script_cmd('context_cost.py', 'misura')}")
     else:
         print(f"  Token stimati a {cpt:.2f} caratteri/token ({cpt_src}).")
-        print(f"  Per il valore esatto: {core.PY} .keep-fresh/scripts/context_cost.py misura")
+        print(f"  Per il valore esatto: {core.script_cmd('context_cost.py', 'misura')}")
 
     # 2. Sessioni Claude Code
     print("\n2. SESSIONI DI CLAUDE CODE (trascrizioni in "

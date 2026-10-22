@@ -23,10 +23,10 @@ Sei controlli:
                         sessione. Avvisa se i blocchi session-start superano il tetto
                         di config.toml: in quel caso l'hook inietta solo l'indice.
 
-Dove sta il codice non e' scritto qui: lo rileva .keep-fresh/scripts/context_core.py a ogni
+Dove sta il codice non e' scritto qui: lo rileva context_core.py (accanto a questo script) a ogni
 esecuzione. Le eccezioni scritte a mano stanno in .keep-fresh/config.toml.
 
-Uso:   <python> .keep-fresh/scripts/docs_lint.py [--quiet]
+Uso:   <python> <plugin>/scripts/docs_lint.py [--quiet]
 Esce 0 se non ci sono errori, 1 se ce n'e' almeno uno. I WARN non fanno fallire.
 """
 
@@ -490,7 +490,7 @@ def check_weight(rep: Report):
         if p.is_file():
             rep.note(f"  {name}: {len(read(p))} caratteri, caricati a ogni sessione "
                      f"(piu' cio' che importa)")
-    rep.note(f"  i token veri: {core.PY} .keep-fresh/scripts/context_cost.py")
+    rep.note(f"  i token veri: {core.script_cmd('context_cost.py')}")
 
 
 CHECKS = [

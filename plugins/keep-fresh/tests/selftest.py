@@ -782,9 +782,76 @@ def test_scripts():
          not any(tmp.rglob("__pycache__")))
 
 
+# ------------------------------------------------- silenzio fuori da keep-fresh, passo ceduto
+
+def fake_transcript(where: Path, hours_ago: float, ctx: int) -> Path:
+    """Una trascrizione di Claude Code con l'ultimo messaggio di `hours_ago` ore fa."""
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+    row = {"timestamp": ts.replace("+00:00", "Z"), "type": "assistant", "message": {
+        "id": "m", "model": "claude-opus-5-5", "content": [], "usage": {
+            "input_tokens": 2, "cache_creation_input_tokens": 1000,
+            "cache_creation": {"ephemeral_1h_input_tokens": 1000},
+            "cache_read_input_tokens": ctx - 1002, "output_tokens": 5}}}
+    p = where / "t.jsonl"
+    p.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return p
+
+
+def all_hooks(cwd: Path, tp: Path):
+    """I tre eventi, con un turno che avrebbe motivo di bloccare e un contesto grande."""
+    out = []
+    for ev, stdin in (("session-start", '{"source":"startup"}'),
+                      ("stop", '{"session_id":"q1"}'),
+                      ("prompt", json.dumps({"session_id": "q1", "transcript_path": str(tp),
+                                             "prompt": "continua"}))):
+        out.append(run(sys.executable, HOOKS_SCRIPT, ev, "--agent", "prova",
+                       cwd=cwd, stdin=stdin))
+    return out
+
+
+def test_quiet_and_yield():
+    tp = fake_transcript(tmpdir(), 3, 200_000)
+
+    root = git_repo(with_config=False)
+    (root / "core.py").write_text("x = 1\n", encoding="utf-8")
+    rs = all_hooks(root, tp)
+    step("fuori da keep-fresh: nessun hook stampa o scrive",
+         all(r.returncode == 0 and not r.stdout.strip() for r in rs)
+         and not (root / ".git" / "agent-hooks.log").exists(),
+         " | ".join(r.stdout[-150:] for r in rs))
+
+    plain = tmpdir()
+    rs = all_hooks(plain, tp)
+    step("fuori da un repository: nessun hook stampa o scrive",
+         all(r.returncode == 0 and not r.stdout.strip() for r in rs)
+         and not any(plain.iterdir()), " | ".join(r.stdout[-150:] for r in rs))
+
+    root = new_project()
+    old = root / ".keep-fresh" / "scripts"
+    old.mkdir()
+    (old / "agent_hooks.py").write_text("# il vecchio impianto\n", encoding="utf-8")
+    (root / "core.py").write_text("x = 1\n", encoding="utf-8")
+    r = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "prova", cwd=root,
+            stdin='{"session_id":"y1"}')
+    step("vecchio impianto presente: l'hook del plugin cede il passo",
+         r.returncode == 0 and not r.stdout.strip()
+         and "ceduto al vecchio impianto" in hook_log(root), f"{r.stdout[-300:]} | {hook_log(root)}")
+
+
+def test_injection_names_lint():
+    root = new_project()
+    r = run(sys.executable, HOOKS_SCRIPT, "session-start", "--agent", "prova", cwd=root,
+            stdin='{"source":"startup"}')
+    m = re.search(r'"([^"]*docs_lint\.py)"', r.stdout)
+    step("l'iniezione indica il lint con un percorso che esiste",
+         m is not None and Path(m.group(1)).is_file() and str(SCRIPTS) in r.stdout,
+         r.stdout[-300:])
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint]
 
 
 def main() -> int:

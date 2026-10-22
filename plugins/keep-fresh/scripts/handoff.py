@@ -3,13 +3,13 @@
 """
 handoff — il filo di una sessione, per riprenderlo in una sessione nuova.
 
-    <python> .keep-fresh/scripts/handoff.py new --title "<una riga>"   crea il file e ne stampa il percorso
-    <python> .keep-fresh/scripts/handoff.py list [--all]               gli handoff aperti; --all anche gli altri
-    <python> .keep-fresh/scripts/handoff.py resume [n|parola] [--comunque]
+    <python> <plugin>/scripts/handoff.py new --title "<una riga>"   crea il file e ne stampa il percorso
+    <python> <plugin>/scripts/handoff.py list [--all]               gli handoff aperti; --all anche gli altri
+    <python> <plugin>/scripts/handoff.py resume [n|parola] [--comunque]
                                                                        lo stampa e lo segna ripreso; --comunque
                                                                        anche se branch o HEAD non coincidono
-    <python> .keep-fresh/scripts/handoff.py discard [n|parola]         lo segna scartato
-    <python> .keep-fresh/scripts/handoff.py prune                      cancella i chiusi o scaduti da tempo
+    <python> <plugin>/scripts/handoff.py discard [n|parola]         lo segna scartato
+    <python> <plugin>/scripts/handoff.py prune                      cancella i chiusi o scaduti da tempo
 
 Un handoff e' un file in .git/keep-fresh-handoff/ (un fatto della macchina, non del
 repository, come context-cost.json). La meccanica sta qui; il CONTENUTO lo scrive l'agente,

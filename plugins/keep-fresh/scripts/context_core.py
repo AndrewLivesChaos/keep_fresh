@@ -117,6 +117,26 @@ def git_dir(root):
     return p if p.is_absolute() else (root / p)
 
 
+def uses_keep_fresh(root) -> bool:
+    """Il progetto usa keep-fresh: ha la sua taratura. Senza, gli hook non fanno niente."""
+    return root is not None and (Path(root) / CONFIG_FILE).is_file()
+
+
+def old_install(root) -> bool:
+    """Il progetto ha ancora gli script copiati dal vecchio inizializzatore."""
+    return root is not None and (Path(root) / TOOL_DIR / "scripts" / "agent_hooks.py").is_file()
+
+
+def script_cmd(name: str, *args: str) -> str:
+    """
+    Il comando con cui l'agente lancia uno script del plugin, con il percorso assoluto:
+    gli script non stanno piu' nel progetto, e chi riceve il messaggio non conosce la
+    cartella del plugin.
+    """
+    path = Path(__file__).resolve().parent / name
+    return " ".join([f'{PY} "{path}"', *args])
+
+
 def head_sha(root):
     """Lo sha corto di HEAD, o None se il repository non ha ancora un commit."""
     ok, out = run_git(root, "rev-parse", "--short", "HEAD")
@@ -310,7 +330,7 @@ def count_levels(root) -> dict:
 
 # Il tetto, in caratteri, dei blocchi session-start che l'hook inietta per intero. E' in
 # caratteri perche' l'hook non ha un tokenizer. Quanti token valgano davvero lo misura
-# .keep-fresh/scripts/context_cost.py; come ordine di grandezza, sui documenti in italiano di questo
+# scripts/context_cost.py del plugin; come ordine di grandezza, sui documenti in italiano di questo
 # impianto un token ha fatto da 1,9 a 2,3 caratteri (stima dalle sessioni, 2026-09-26).
 DEFAULT_INJECTION_BUDGET = 8000
 # Nell'indice, la prima riga di ogni voce si taglia qui: basta a riconoscerla.
@@ -367,7 +387,7 @@ def build_injection(root, cfg=None):
     budget = injection_budget(cfg)
 
     out = [
-        "=== Stato del progetto (iniettato da .keep-fresh/scripts/agent_hooks.py) ===",
+        "=== Stato del progetto (iniettato da keep-fresh, agent_hooks.py) ===",
         f"Fonte: {STATUS_FILE}. Se agisci su qualcosa di qui sotto, leggi in quel file la "
         f"sezione che ti serve, non il file intero.",
         "",
@@ -416,7 +436,7 @@ def build_injection(root, cfg=None):
                    f"precedente mai registrato: valuta se va annotato.")
 
     out += ["", "Verifica che i documenti dicano ancora il vero: "
-                f"{PY} .keep-fresh/scripts/docs_lint.py",
+                + script_cmd("docs_lint.py"),
             "=== fine stato del progetto ==="]
     return {"text": "\n".join(out), "blocks_chars": blocks_chars, "budget": budget,
             "reduced": reduced, "levels": levels}
