@@ -1,6 +1,6 @@
 {
   "name": "keep-fresh",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Lint dei documenti di contesto, hook che iniettano lo stato del lavoro e lo tengono aggiornato, handoff fra sessioni",
   "author": {
     "name": "AndrewLivesChaos"
