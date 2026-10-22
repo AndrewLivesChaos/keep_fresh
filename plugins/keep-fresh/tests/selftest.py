@@ -952,9 +952,152 @@ def test_kf_init():
          r.returncode == 1 and "/keep-fresh:migrate" in r.stdout, r.stdout[-600:])
 
 
+# ------------------------------------------------------------------------------ migrate
+
+MIGRATE_SCRIPT = SCRIPTS / "migrate.py"
+OLD_BOOT = ("python -c \"import runpy,subprocess,sys;r=subprocess.run(['git','rev-parse',"
+            "'--show-toplevel'],capture_output=True,text=True).stdout.strip();r and "
+            "runpy.run_path(r+'/.keep-fresh/scripts/agent_hooks.py',run_name='__main__')\"")
+DOC_OLD = """# Agenti
+
+Prima di chiudere: `python .keep-fresh/scripts/docs_lint.py`.
+Gli handoff: `python .keep-fresh/scripts/handoff.py list`, oppure /keep-fresh handoff.
+Il blocco del prompt sta in `.keep-fresh/scripts/agent_hooks.py:205-249`.
+"""
+
+
+def old_project(parent: Path, rel: str) -> Path:
+    """Un progetto col vecchio impianto, tutto committato, come lo lasciava agent_context_init."""
+    root = parent / rel
+    root.mkdir(parents=True)
+    run("git", "init", "-q", ".", cwd=root)
+    kf = root / ".keep-fresh"
+    (kf / "scripts").mkdir(parents=True)
+    shutil.copyfile(PLUGIN / "templates" / "config.toml", kf / "config.toml")
+    (kf / "scripts" / "agent_hooks.py").write_text("# vecchio\n", encoding="utf-8")
+    (kf / "guide.md").write_text("# guida vecchia\n", encoding="utf-8")
+    (kf / "version.json").write_text("{}\n", encoding="utf-8")
+    ev = [("SessionStart", "session-start"), ("Stop", "stop"), ("UserPromptSubmit", "prompt")]
+    ours = lambda agent: {e: [{"hooks": [{"type": "command", "timeout": 20,
+                                          "command": f"{OLD_BOOT} {a} --agent {agent}"}]}]
+                          for e, a in ev}
+    claude = {"permissions": {"allow": ["Bash(git:*)"]},
+              "hooks": dict(ours("claude"), PreToolUse=[{"matcher": "Bash", "hooks": [
+                  {"type": "command", "command": "python altro.py"}]}])}
+    (root / ".claude").mkdir()
+    (root / ".claude" / "settings.local.json").write_text(json.dumps(claude, indent=2),
+                                                          encoding="utf-8")
+    (root / ".codex").mkdir()
+    (root / ".codex" / "hooks.json").write_text(json.dumps({"hooks": ours("codex")}, indent=2),
+                                                encoding="utf-8")
+    (root / ".gitignore").write_text("build/\n.claude/settings.local.json\n.codex/hooks.json\n",
+                                     encoding="utf-8")
+    (root / "AGENTS.md").write_text(DOC_OLD, encoding="utf-8")
+    st = root / STATUS_FILE
+    st.parent.mkdir(parents=True)
+    st.write_text("# Stato\n\nLint: `python .keep-fresh/scripts/docs_lint.py`\n", encoding="utf-8")
+    (root / "core.py").write_text("x = 1\n", encoding="utf-8")
+    run("git", "add", "-A", "-f", cwd=root)
+    run("git", "rm", "-q", "--cached", ".claude/settings.local.json", ".codex/hooks.json",
+        cwd=root)
+    run("git", "commit", "-q", "-m", "progetto", cwd=root)
+    hd = root / ".git" / "keep-fresh-handoff"
+    hd.mkdir()
+    (hd / "20261020-1140-prova.md").write_text("cita .keep-fresh/scripts/handoff.py\n",
+                                               encoding="utf-8")
+    return root
+
+
+def migrate(root: Path, *args):
+    return run(sys.executable, MIGRATE_SCRIPT, "--root", root, *args, cwd=root,
+               env=fake_home({".claude": "1.0.0"}))
+
+
+def test_migrate():
+    sys.path.insert(0, str(SCRIPTS))
+    import migrate as mig
+
+    base = tmpdir("kf-projects-")
+    a = old_project(base, "alfa")
+    b = old_project(base, "clienti/progetto/beta")
+    (base / "qualunque").mkdir()
+    fake_kf = base / "keep_fresh" / "plugins" / "keep-fresh" / ".claude-plugin"
+    fake_kf.mkdir(parents=True)
+    (fake_kf / "plugin.json").write_text("{}", encoding="utf-8")
+    (base / "keep_fresh" / ".keep-fresh").mkdir()
+    (base / "keep_fresh" / ".keep-fresh" / "config.toml").write_text("", encoding="utf-8")
+    found = sorted(p.relative_to(base).as_posix() for p in mig.find_projects(base))
+    step("migrate: trova i progetti e salta il repo di keep-fresh",
+         found == ["alfa", "clienti/progetto/beta"], str(found))
+
+    before = snapshot(base)
+    r = migrate(base)
+    step("migrate a vuoto non scrive niente", not changed(before, base),
+         str(changed(before, base)[:8]))
+    step("migrate a vuoto elenca rimozioni, agganci e riscritture",
+         r.returncode == 0 and "togli .keep-fresh/scripts" in r.stdout
+         and "tolti 3 hook di keep-fresh" in r.stdout and "/keep-fresh:lint" in r.stdout,
+         r.stdout[-900:])
+
+    r = migrate(base, "--apply")
+    step("migrate --apply: via script, guida e versione; config e status restano",
+         r.returncode == 0
+         and not any((a / p).exists() for p in (".keep-fresh/scripts", ".keep-fresh/guide.md",
+                                                 ".keep-fresh/version.json"))
+         and (a / CONFIG_FILE).is_file() and (a / STATUS_FILE).is_file(), r.stdout[-600:])
+    claude = json.loads((a / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    gi = (a / ".gitignore").read_text(encoding="utf-8")
+    step("migrate --apply: l'hook altrui resta, il file codex vuoto sparisce, "
+         ".gitignore perde solo la riga codex",
+         list(claude.get("hooks", {})) == ["PreToolUse"] and "permissions" in claude
+         and not (a / ".codex" / "hooks.json").exists()
+         and ".claude/settings.local.json" in gi and ".codex/hooks.json" not in gi
+         and "build/" in gi, f"{claude} | {gi!r}")
+    doc = (a / "AGENTS.md").read_text(encoding="utf-8")
+    step("migrate --apply: i documenti usano i comandi della skill",
+         all(s in doc for s in ("`/keep-fresh:lint`", "`/keep-fresh:handoff --elenco`",
+                                "/keep-fresh:handoff.", "`keep-fresh:scripts/agent_hooks.py`"))
+         and ".keep-fresh/scripts" not in doc, doc)
+    step("migrate --apply: l'handoff in .git resta intatto",
+         (a / ".git" / "keep-fresh-handoff" / "20261020-1140-prova.md").read_text(
+             encoding="utf-8") == "cita .keep-fresh/scripts/handoff.py\n")
+
+    run("git", "add", "-A", cwd=a)
+    run("git", "commit", "-q", "-m", "migrazione", cwd=a)
+    run("git", "add", "-A", cwd=b)
+    run("git", "commit", "-q", "-m", "migrazione", cwd=b)
+    before = snapshot(base)
+    r = migrate(base, "--apply")
+    step("migrate rilanciato: gia' migrato, niente cambia",
+         r.stdout.count("gia' migrato") == 2 and not changed(before, base), r.stdout[-500:])
+
+    rs = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "prova", cwd=a,
+             stdin='{"session_id":"m1"}')
+    step("migrate: dopo la migrazione Stop non vede codice cambiato",
+         rs.returncode == 0 and not rs.stdout.strip(), rs.stdout[-300:])
+
+    base2 = tmpdir("kf-projects-")
+    c = old_project(base2, "sporco")
+    (c / "AGENTS.md").write_text(DOC_OLD + "\nmodifica mia\n", encoding="utf-8")
+    d = old_project(base2, "rotto")
+    (d / ".codex" / "hooks.json").write_text("{ non e' json", encoding="utf-8")
+    before = snapshot(base2)
+    r = migrate(base2, "--apply")
+    step("migrate: un progetto con modifiche non committate in AGENTS.md si salta e lo dice",
+         "saltato" in r.stdout and "AGENTS.md" in r.stdout
+         and (c / ".keep-fresh" / "scripts").exists(), r.stdout[-600:])
+    step("migrate: un file di aggancio con JSON rotto fa saltare il progetto e lo dice",
+         ".codex/hooks.json" in r.stdout and (d / ".keep-fresh" / "scripts").exists()
+         and not changed(before, base2), r.stdout[-600:])
+
+    new, _ = mig.rewrite_text("usa /keep-fresh:handoff e /keep-fresh:init")
+    step("rewrite_text: \"/keep-fresh:handoff\" resta com'e'",
+         new == "usa /keep-fresh:handoff e /keep-fresh:init", new)
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate]
 
 
 def main() -> int:
