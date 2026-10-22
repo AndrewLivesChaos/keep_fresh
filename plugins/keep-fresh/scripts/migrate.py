@@ -3,8 +3,8 @@
 """
 migrate — porta sul plugin, in un colpo, i progetti inizializzati con il vecchio impianto.
 
-    <python> <plugin>/scripts/migrate.py [--root DIR]            prova a vuoto: non scrive
-    <python> <plugin>/scripts/migrate.py [--root DIR] --apply    scrive
+    <python> <plugin>/scripts/migrate.py --root DIR              prova a vuoto: non scrive
+    <python> <plugin>/scripts/migrate.py --root DIR --apply      scrive
 
 Il vecchio impianto copiava gli script in ogni progetto (.keep-fresh/scripts/) e li
 agganciava nei file locali degli agenti. Con il plugin il codice sta in un posto solo.
@@ -309,22 +309,17 @@ def describe(plan: ProjectPlan) -> list:
     return out
 
 
-def default_root() -> Path:
-    if sys.platform == "win32" and Path("C:/projects").is_dir():
-        return Path("C:/projects")
-    return Path.home() / "projects"
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="Porta sul plugin i progetti col vecchio impianto.")
-    ap.add_argument("--root", type=Path, default=None,
-                    help="dove cercare i progetti (default: C:\\projects su Windows, "
-                         "altrimenti ~/projects)")
+    # Niente default: dove stanno i progetti lo sa solo chi li ha, e cercarli in una
+    # cartella indovinata migrerebbe progetti che nessuno ha nominato.
+    ap.add_argument("--root", type=Path, required=True,
+                    help="la cartella sotto cui cercare i progetti (fino a 4 livelli)")
     ap.add_argument("--apply", action="store_true", help="scrive; senza, e' la prova a vuoto")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    root = (args.root or default_root()).resolve()
+    root = args.root.resolve()
 
     print(f"keep-fresh migrate: progetti sotto {root}")
     print("PROVA A VUOTO: non scrive niente. Con --apply scrive." if not args.apply

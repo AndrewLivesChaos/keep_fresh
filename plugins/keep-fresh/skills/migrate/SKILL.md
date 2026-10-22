@@ -1,7 +1,7 @@
 ---
 name: migrate
 disable-model-invocation: true
-argument-hint: "[--root DIR]"
+argument-hint: "--root DIR"
 description: Use when projects still have the old keep-fresh setup (scripts copied in .keep-fresh/scripts/, hooks in settings.local.json or .codex/hooks.json) and must move to the plugin, all at once
 ---
 
@@ -14,14 +14,14 @@ della skill. Non committa.
 `<scripts>` è `../../scripts/` rispetto a questo file; in Claude Code
 `${CLAUDE_SKILL_DIR}/../../scripts/`. `python` su Windows, `python3` su macOS/Linux.
 
-1. **Prova a vuoto**, che non scrive niente:
-   `python "<scripts>/migrate.py"` (con `--root DIR` se l'utente l'ha indicata; senza, cerca in
-   `C:\projects` su Windows e in `~/projects` altrove).
+1. **Prova a vuoto**, che non scrive niente. Serve la cartella sotto cui stanno i progetti:
+   se l'utente non l'ha detta, chiedila (non indovinarla):
+   `python "<scripts>/migrate.py" --root DIR`.
 2. **Mostra all'utente l'uscita**: in testa dove il plugin è installato (se manca in una
    configurazione, lì i progetti migrati resterebbero senza hook: dillo chiaramente), poi per
    ogni progetto cosa toglie e cosa riscrive, quali salta e perché.
 3. **Aspetta il suo via libera.** Mai `--apply` senza conferma.
-4. Poi `python "<scripts>/migrate.py" --apply` (stessa `--root`).
+4. Poi `python "<scripts>/migrate.py" --root DIR --apply`, con la stessa cartella.
 5. Di' all'utente di guardare il `git diff` di ogni progetto migrato e che i commit li fa
    lui. I progetti saltati restano col vecchio impianto: si rilancia dopo aver sistemato il
    motivo (di solito modifiche non committate).

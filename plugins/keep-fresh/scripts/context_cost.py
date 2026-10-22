@@ -210,7 +210,7 @@ def claude_files_for(roots, root_paths=(), other_cwds=None):
     dei percorsi dati, e quelle nella cartella che Claude Code intesta al percorso del
     repository. La seconda regola serve ai repository spostati: le sessioni vecchie
     registrano il percorso di prima, ma stanno nella cartella di adesso (osservato il
-    2026-09-28 su progetto, spostato da C:\\vecchia a C:\\progetti\\vecchia).
+    2026-09-28 su un progetto spostato di cartella).
     other_cwds, se dato, raccoglie le cartelle di lavoro diverse da quella di adesso.
     """
     base = claude_home() / "projects"

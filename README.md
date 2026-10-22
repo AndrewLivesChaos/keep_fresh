@@ -1,5 +1,7 @@
 # keep-fresh
 
+*[English](README.en.md)*
+
 Plugin per agenti di programmazione (Claude Code e Codex) che prepara un repository git
 perché gli agenti ci lavorino con un contesto che non marcisce: documenti di contesto, un
 lint che controlla che dicano ancora il vero, e hook che mettono lo stato del lavoro
@@ -11,10 +13,16 @@ plugin. Il codice sta **solo nel plugin**: un fix rilasciato arriva a tutti i pr
 un aggiornamento del plugin, senza toccarli.
 
 > **Stato delle verifiche.** Provato su **Windows 11** con **Python 3.14**: il self-test del
-> plugin su repository finti; gli hook del plugin in sessioni vere di **Claude Code
-> 2.1.308** (`claude -p --plugin-dir`) e **Codex 0.154.0** (`codex exec`, con un plugin di
-> prova e `--dangerously-bypass-hook-trust`). Non provato: macOS, Linux, l'approvazione degli
-> hook in una sessione interattiva di Codex.
+> plugin su repository finti; il plugin installato dal marketplace in **Claude Code
+> 2.1.308** e **Codex 0.154.0**, con gli hook che girano in sessioni vere (`claude -p`,
+> `codex exec` dopo l'approvazione con `/hooks`). Non provato: macOS e Linux.
+
+## Requisiti
+
+- git;
+- Python **3.14** o successivo, raggiungibile come `python` su Windows e `python3` su
+  macOS/Linux (il minimo tecnico è 3.11: serve `tomllib`);
+- Claude Code o Codex.
 
 ## Installare
 
@@ -27,9 +35,11 @@ claude plugin marketplace add AndrewLivesChaos/keep_fresh
 claude plugin install keep-fresh@keep-fresh
 ```
 
-Per una seconda configurazione (per esempio `~/.claude-lavoro`) gli stessi due comandi con
-`CLAUDE_CONFIG_DIR` puntato a quella cartella: le configurazioni restano isolate, ognuna con
-la sua copia.
+Claude Code clona il marketplace con git e prova prima SSH. Su una macchina senza una chiave
+SSH per GitHub imposta `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`, altrimenti gli aggiornamenti dal
+pannello `/plugin` possono fallire. Se usi più configurazioni di Claude Code
+(`CLAUDE_CONFIG_DIR`), ripeti i due comandi con quella variabile impostata: ogni
+configurazione ha la sua copia.
 
 **Codex:**
 
@@ -39,12 +49,8 @@ codex plugin add keep-fresh@keep-fresh
 ```
 
 Poi, dentro Codex, `/hooks` e approva i tre hook di keep-fresh. **Senza approvazione Codex li
-salta senza avvisare** (provato con `codex exec`, Windows, 0.154.0). Secondo la
-documentazione l'approvazione vale per la definizione dell'hook: va rifatta solo se il file
-di hook del plugin cambia, non a ogni aggiornamento degli script.
-
-Il repository è privato: Claude Code e Codex lo clonano con le credenziali git della
-macchina (la chiave SSH, se caricata senza prompt).
+salta senza avvisare.** L'approvazione vale per il plugin, non per il progetto; secondo la
+documentazione di Codex va rifatta solo se un rilascio cambia il file di hook del plugin.
 
 ## I comandi
 
@@ -54,9 +60,9 @@ macchina (la chiave SSH, se caricata senza prompt).
 | `/keep-fresh:status` | stato in sola lettura: plugin, hook, handoff, lint, cosa sistemare |
 | `/keep-fresh:handoff` | l'agente scrive dove sei arrivato, per riprendere in una sessione nuova (`--elenco`, `--scarta n`) |
 | `/keep-fresh:resume` | riprende un handoff (`n`, una parola del titolo, `--comunque`) |
-| `/keep-fresh:migrate` | porta sul plugin, in un colpo, i progetti col vecchio impianto |
 | `/keep-fresh:lint` | il lint dei documenti; lo usa anche l'agente da solo |
 | `/keep-fresh:cost` | quanto pesa il contesto (`misura`, `--giorni N`) |
+| `/keep-fresh:migrate` | solo per chi usava le versioni prima della 1.0.0, vedi sotto |
 
 In Codex le skill si invocano con `$keep-fresh:<nome>`.
 
@@ -163,25 +169,6 @@ schermo: non vedere niente è normale.
 Codex legge `AGENTS.md` da solo. Claude Code legge `CLAUDE.md`, quindi gli serve un
 `CLAUDE.md` che importi `AGENTS.md`: lo scrive l'agente seguendo la guida.
 
-## Migrare i progetti col vecchio impianto
-
-Le versioni precedenti copiavano gli script in ogni progetto (`.keep-fresh/scripts/`) e
-agganciavano gli hook in `.claude/settings.local.json` e `.codex/hooks.json`. Per portarli
-tutti sul plugin:
-
-1. installa il plugin in tutte le configurazioni (sopra);
-2. `/keep-fresh:migrate`: prova a vuoto su tutti i progetti sotto `C:\projects` (o
-   `--root DIR`), poi, con la tua conferma, scrive. Toglie script, guida e versione copiati,
-   toglie dai file di aggancio solo gli hook di keep-fresh, e nei documenti sostituisce i
-   comandi degli script con i comandi della skill. Salta, dicendolo, un progetto con
-   modifiche non committate nei file da toccare. Non committa;
-3. guarda il `git diff` di ogni progetto e committa;
-4. togli le vecchie skill copiate a mano (`~/.claude/skills/keep-fresh` e simili), che
-   altrimenti si vedono accanto a quelle del plugin.
-
-Finché un progetto non è migrato, gli hook del plugin **cedono il passo** alla sua copia
-vecchia: un solo impianto lavora, mai due.
-
 ## Aggiornare
 
 ```powershell
@@ -192,6 +179,25 @@ codex plugin marketplace upgrade               # Codex
 Oppure, in Claude Code, `/plugin` → *Marketplaces* → keep-fresh → *Enable auto-update*. Un
 aggiornamento arriva solo quando cambia la versione del plugin. `config.toml` e `status.md`
 non vengono mai toccati.
+
+## Dalle versioni prima della 1.0.0
+
+Prima della 1.0.0 keep-fresh copiava gli script in ogni progetto (`.keep-fresh/scripts/`) e
+agganciava gli hook in `.claude/settings.local.json` e `.codex/hooks.json`. Per portare quei
+progetti sul plugin:
+
+1. installa il plugin in tutte le configurazioni (sopra);
+2. `/keep-fresh:migrate --root <cartella>`: prova a vuoto su tutti i progetti sotto quella
+   cartella, poi, con la tua conferma, scrive. Toglie script, guida e versione copiati,
+   toglie dai file di aggancio solo gli hook di keep-fresh, e nei documenti sostituisce i
+   comandi degli script con i comandi della skill. Salta, dicendolo, un progetto con
+   modifiche non committate nei file da toccare. Non committa;
+3. guarda il `git diff` di ogni progetto e committa;
+4. togli le vecchie skill copiate a mano (`~/.claude/skills/keep-fresh` e simili), che
+   altrimenti si vedono accanto a quelle del plugin.
+
+Finché un progetto non è migrato, gli hook del plugin **cedono il passo** alla sua copia
+vecchia: un solo impianto lavora, mai due.
 
 ## Se qualcosa non torna
 
@@ -223,7 +229,11 @@ plugins/keep-fresh/                  il plugin
 
 - Si lavora su `develop`; `master` è ciò che gli utenti installano.
 - Per provare una modifica senza toccare i progetti: una sessione con
-  `claude --plugin-dir C:\projects\keep_fresh\plugins\keep-fresh`.
+  `claude --plugin-dir ./plugins/keep-fresh` dalla radice del repository.
 - `python plugins/keep-fresh/tests/selftest.py` deve stampare `self-test: OK`.
 - **Rilascio**: versione aumentata in **tutti e due** i `plugin.json` (il self-test
   controlla che coincidano), merge su `master`, push.
+
+## Licenza
+
+[MIT](LICENSE).

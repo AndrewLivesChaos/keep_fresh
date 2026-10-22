@@ -1244,6 +1244,11 @@ def test_review_fixes():
          ".claude/settings.local.json" not in plan.gitignore_lines
          and ".codex/hooks.json" in plan.gitignore_lines, str(plan.gitignore_lines))
 
+    # Senza --root migrate non indovina dove stanno i progetti: lo chiede.
+    r = run(sys.executable, MIGRATE_SCRIPT, cwd=tmpdir())
+    step("migrate senza --root: si ferma e chiede la cartella", r.returncode == 2
+         and "--root" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
+
     # 7. Il lanciatore e' eseguibile per git: su macOS/Linux si lancia per percorso.
     r = run("git", "ls-files", "-s", "plugins/keep-fresh/hooks/run-hook.cmd", cwd=REPO)
     step("run-hook.cmd e' eseguibile (100755) nel repo", r.stdout.startswith("100755"),

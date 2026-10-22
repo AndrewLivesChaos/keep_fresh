@@ -6,6 +6,7 @@
     "name": "AndrewLivesChaos"
   },
   "repository": "https://github.com/AndrewLivesChaos/keep_fresh",
+  "license": "MIT",
   "skills": "./skills/",
   "hooks": "./hooks/codex-hooks.json"
 }
