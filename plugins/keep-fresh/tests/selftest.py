@@ -1178,6 +1178,14 @@ def test_review_fixes():
          "agent_hooks.py" not in r.stdout and "docs_lint.py` non esiste" not in r.stdout,
          _lint_lines(r.stdout))
 
+    st.write_text(st.read_text(encoding="utf-8")
+                  + "\nGli hook in `scripts/agent_hooks.py` usano `tomllib` e `build_injection`.\n",
+                  encoding="utf-8")
+    r = run(sys.executable, LINT_SCRIPT, cwd=root)
+    step("lint: percorsi e simboli del plugin citati senza prefisso esistono",
+         "scripts/agent_hooks.py` non esiste" not in r.stdout and "`tomllib`" not in r.stdout
+         and "`build_injection`" not in r.stdout, _lint_lines(r.stdout))
+
     # 2. La nota sull'interprete accanto a un comando riscritto cade con il comando.
     new, _ = mig.rewrite_text("Lint: `python .keep-fresh/scripts/docs_lint.py` "
                               "(`python3` su macOS/Linux).\n"

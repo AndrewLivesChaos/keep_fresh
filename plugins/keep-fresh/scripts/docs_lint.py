@@ -116,7 +116,11 @@ CODE_BLOB = None
 def code_blob() -> str:
     global CODE_BLOB
     if CODE_BLOB is None:
-        CODE_BLOB = "\n".join(read(ROOT / rel) for rel in core.tree_files(ROOT, CONFIG))
+        # Anche gli script del plugin: i documenti di un progetto descrivono keep-fresh e
+        # ne citano i nomi. Finche' gli script erano copiati nel progetto li trovava l'albero.
+        plugin = sorted((PLUGIN_ROOT / "scripts").glob("*.py"))
+        CODE_BLOB = "\n".join([read(ROOT / rel) for rel in core.tree_files(ROOT, CONFIG)]
+                              + [read(p) for p in plugin])
     return CODE_BLOB
 
 
@@ -236,6 +240,8 @@ def path_exists_anywhere(rel: str) -> bool:
     if (ROOT / rel).exists():
         return True
     if "/" not in rel and (PLUGIN_ROOT / "scripts" / rel).is_file():
+        return True
+    if (PLUGIN_ROOT / rel).exists():
         return True
     try:
         for hit in ROOT.glob("**/" + rel):
