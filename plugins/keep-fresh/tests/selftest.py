@@ -1135,9 +1135,30 @@ def test_skills():
          not any(".keep-fresh/scripts" in t for t in texts))
 
 
+# ------------------------------------------------------------------- vecchio impianto
+
+# I file che nominano .keep-fresh/scripts di proposito: lo riconoscono per migrarlo o per
+# cedergli il passo, lo descrivono come passato, o lo provano. Ovunque altrove sarebbe un
+# rimando al vecchio posto del codice.
+OLD_PATH_ALLOWED = (
+    "docs/superpowers/", "README.md",
+    "plugins/keep-fresh/scripts/migrate.py", "plugins/keep-fresh/scripts/context_core.py",
+    "plugins/keep-fresh/scripts/kf_init.py", "plugins/keep-fresh/scripts/agent_hooks.py",
+    "plugins/keep-fresh/tests/selftest.py",
+    "plugins/keep-fresh/skills/init/SKILL.md", "plugins/keep-fresh/skills/migrate/SKILL.md",
+)
+
+
+def test_no_old_code_location():
+    r = run("git", "grep", "-l", "-F", ".keep-fresh/scripts", cwd=REPO)
+    hits = [f for f in r.stdout.splitlines() if not f.startswith(OLD_PATH_ALLOWED)]
+    step("nessun file del repo cita .keep-fresh/scripts come posto del codice", not hits,
+         str(hits))
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate, test_skills]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate, test_skills, test_no_old_code_location]
 
 
 def main() -> int:
