@@ -1,0 +1,20 @@
+{
+  "name": "keep-fresh",
+  "interface": {
+    "displayName": "keep-fresh"
+  },
+  "plugins": [
+    {
+      "name": "keep-fresh",
+      "source": {
+        "source": "local",
+        "path": "./plugins/keep-fresh"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

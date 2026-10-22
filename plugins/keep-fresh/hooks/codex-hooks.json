@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" session-start --agent codex",
+            "commandWindows": "python \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" session-start --agent codex",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" stop --agent codex",
+            "commandWindows": "python \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" stop --agent codex",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" prompt --agent codex",
+            "commandWindows": "python \"${PLUGIN_ROOT}/scripts/agent_hooks.py\" prompt --agent codex",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

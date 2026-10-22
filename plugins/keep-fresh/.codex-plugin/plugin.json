@@ -1,0 +1,11 @@
+{
+  "name": "keep-fresh",
+  "version": "1.0.0",
+  "description": "Lint dei documenti di contesto, hook che iniettano lo stato del lavoro e lo tengono aggiornato, handoff fra sessioni",
+  "author": {
+    "name": "AndrewLivesChaos"
+  },
+  "repository": "https://github.com/AndrewLivesChaos/keep_fresh",
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json"
+}

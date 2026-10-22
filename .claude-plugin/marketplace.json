@@ -1,0 +1,14 @@
+{
+  "name": "keep-fresh",
+  "description": "keep-fresh: contesto per agenti che non marcisce",
+  "owner": {
+    "name": "AndrewLivesChaos"
+  },
+  "plugins": [
+    {
+      "name": "keep-fresh",
+      "source": "./plugins/keep-fresh",
+      "description": "Lint dei documenti di contesto, hook che iniettano lo stato del lavoro e lo tengono aggiornato, handoff fra sessioni"
+    }
+  ]
+}
