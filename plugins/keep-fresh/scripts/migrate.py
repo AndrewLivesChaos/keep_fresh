@@ -61,7 +61,16 @@ REWRITES = [
     (re.compile(SCRIPTS + r"(\w+\.py)(?::\d+(?:-\d+)?)?"), r"keep-fresh:scripts/\1"),
     (re.compile(r"\.keep-fresh/scripts/?"), "keep-fresh:scripts/"),
     (re.compile(r"\.keep-fresh/guide\.md"), "keep-fresh:guide.md"),
+    # La nota sull'interprete accanto a un comando che non ne ha piu' uno.
+    (re.compile(r"(/keep-fresh:\w+[^`\n]*`?)\s*\(`python3?`\s+su macOS/Linux\)"), r"\1"),
+    (re.compile(r"(/keep-fresh:\w+[^\n#]*?)\s*#\s*`?python3?`?\s+su macOS/Linux"), r"\1"),
 ]
+
+# Istruzioni che col plugin non valgono piu' e che una sostituzione non puo' correggere:
+# si segnalano, il testo resta com'e'.
+OLD_INSTRUCTIONS = re.compile(r"agent_context_init\.py|deploy\.py"
+                              r"|(?:inizializzatore|keep-fresh)[^\n]*--force"
+                              r"|--force[^\n]*(?:inizializzatore|keep-fresh)")
 
 
 def rewrite_text(text: str) -> tuple:
@@ -220,6 +229,10 @@ def plan_project(project: Path) -> ProjectPlan:
         except (OSError, UnicodeDecodeError):
             continue
         new, _ = rewrite_text(text)
+        for n, line in enumerate(new.splitlines(), 1):
+            if OLD_INSTRUCTIONS.search(line):
+                plan.warnings.append(f"{rel}:{n}: cita l'inizializzatore, deploy.py o --force, "
+                                     f"che col plugin non esistono piu': rivedila a mano")
         if new == text:
             if ".keep-fresh/version.json" in text:
                 plan.warnings.append(f"{rel} cita .keep-fresh/version.json, che non esiste piu'")
@@ -240,11 +253,37 @@ def plan_project(project: Path) -> ProjectPlan:
                         if l.strip()})
         if dirty:
             plan.skip_reason = f"modifiche non committate in {', '.join(dirty)}"
+            return plan
+
+    # Una cartella da togliere puo' contenere file dell'utente che git non conosce: si
+    # toglierebbero con lei. I compilati di Python non contano.
+    dirs = [r for r in plan.removals if (project / r).is_dir()]
+    if dirs:
+        extra = [f for f in git(project, "ls-files", "--others", "--", *dirs).splitlines()
+                 if f and "__pycache__" not in f and not f.endswith(".pyc")]
+        if extra:
+            plan.skip_reason = (f"file non tracciati in {', '.join(dirs)}: {', '.join(extra)}. "
+                                f"Spostali o toglili, poi rilancia")
     return plan
 
 
 def apply_plan(project: Path, plan: ProjectPlan) -> list:
+    """
+    Prima gli agganci, poi .gitignore e i documenti, per ultimi gli script. Se una
+    scrittura fallisce a meta', gli script restano e i vecchi agganci, se ci sono ancora,
+    trovano ancora cosa eseguire: il progetto resta sul vecchio impianto, non senza hook.
+    """
     done = []
+    order = sorted(plan.contents, key=lambda r: (r not in HOOK_FILES, r != ".gitignore", r))
+    for rel in order:
+        p = project / rel
+        content = plan.contents[rel]
+        if content is None:
+            p.unlink()
+            done.append(f"tolto {rel}")
+        else:
+            p.write_text(content, encoding="utf-8", newline="\n")
+            done.append(f"riscritto {rel}")
     for rel in plan.removals:
         p = project / rel
         if p.is_dir():
@@ -252,14 +291,6 @@ def apply_plan(project: Path, plan: ProjectPlan) -> list:
         else:
             p.unlink()
         done.append(f"tolto {rel}")
-    for rel, content in plan.contents.items():
-        p = project / rel
-        if content is None:
-            p.unlink()
-            done.append(f"tolto {rel}")
-        else:
-            p.write_text(content, encoding="utf-8", newline="\n")
-            done.append(f"riscritto {rel}")
     return done
 
 
@@ -306,7 +337,7 @@ def main() -> int:
         print("  ! nessuna configurazione di Claude Code o di Codex trovata")
 
     projects = find_projects(root)
-    todo = done_already = skipped = 0
+    todo = done_already = skipped = failed = 0
     for project in projects:
         print(f"\n== {project}")
         plan = plan_project(project)
@@ -324,13 +355,20 @@ def main() -> int:
         for line in describe(plan):
             print(line)
         if args.apply:
-            apply_plan(project, plan)
+            try:
+                apply_plan(project, plan)
+            except OSError as exc:
+                failed += 1
+                print(f"fallito: {exc}. Guarda git status in questo progetto prima di "
+                      f"rilanciare")
+                continue
             print("fatto. git status:")
             for l in git(project, "status", "--short").splitlines():
                 print(f"    {l}")
 
     verb = "migrati" if args.apply else "da migrare"
-    print(f"\n{todo} {verb}, {done_already} gia' migrati, {skipped} saltati")
+    print(f"\n{todo} {verb}, {done_already} gia' migrati, {skipped} saltati"
+          + (f", {failed} falliti" if failed else ""))
     return 0
 
 

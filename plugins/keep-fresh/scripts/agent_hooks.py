@@ -369,7 +369,7 @@ def main(argv) -> int:
         # Finche' il progetto non e' migrato lavora la sua copia vecchia: due impianti
         # darebbero ogni avviso due volte. La copia vecchia sta dentro il progetto e non
         # cede mai; cede solo questa, che sta nel plugin.
-        if core.old_install(root) and root.resolve() not in Path(__file__).resolve().parents:
+        if core.old_hooked(root, AGENT) and root.resolve() not in Path(__file__).resolve().parents:
             log(name, "ceduto al vecchio impianto in .keep-fresh/scripts")
             return 0
         return fn(read_input())

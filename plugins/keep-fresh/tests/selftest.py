@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -824,8 +825,12 @@ def test_quiet_and_yield():
     old = root / ".keep-fresh" / "scripts"
     old.mkdir()
     (old / "agent_hooks.py").write_text("# il vecchio impianto\n", encoding="utf-8")
+    (root / ".claude").mkdir()
+    (root / ".claude" / "settings.local.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "python .keep-fresh/scripts/agent_hooks.py stop"}]}
+    ]}}), encoding="utf-8")
     (root / "core.py").write_text("x = 1\n", encoding="utf-8")
-    r = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "prova", cwd=root,
+    r = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "claude", cwd=root,
             stdin='{"session_id":"y1"}')
     step("vecchio impianto presente: l'hook del plugin cede il passo",
          r.returncode == 0 and not r.stdout.strip()
@@ -1156,9 +1161,88 @@ def test_no_old_code_location():
          str(hits))
 
 
+# ---------------------------------------------------------------- revisione finale
+
+def test_review_fixes():
+    sys.path.insert(0, str(SCRIPTS))
+    import migrate as mig
+
+    # 1. Il lint risolve i file del plugin citati nei documenti di un progetto migrato.
+    root = new_project()
+    st = root / STATUS_FILE
+    st.write_text(st.read_text(encoding="utf-8")
+                  + "\nVedi `keep-fresh:scripts/agent_hooks.py` e `docs_lint.py`.\n",
+                  encoding="utf-8")
+    r = run(sys.executable, LINT_SCRIPT, cwd=root)
+    step("lint: i file del plugin citati nei documenti esistono",
+         "agent_hooks.py" not in r.stdout and "docs_lint.py` non esiste" not in r.stdout,
+         _lint_lines(r.stdout))
+
+    # 2. La nota sull'interprete accanto a un comando riscritto cade con il comando.
+    new, _ = mig.rewrite_text("Lint: `python .keep-fresh/scripts/docs_lint.py` "
+                              "(`python3` su macOS/Linux).\n"
+                              "python .keep-fresh/scripts/docs_lint.py      # python3 su macOS/Linux\n")
+    step("rewrite_text: la nota (python3 su macOS/Linux) cade con il comando",
+         new == "Lint: `/keep-fresh:lint`.\n/keep-fresh:lint\n", repr(new))
+
+    # 3, 9. Avviso per le istruzioni che non valgono piu'; file dell'utente non tracciati.
+    base = tmpdir("kf-projects-")
+    p = old_project(base, "forza")
+    (p / "AGENTS.md").write_text(DOC_OLD + "Aggiorna con `python agent_context_init.py --force`.\n",
+                                 encoding="utf-8")
+    run("git", "commit", "-q", "-am", "doc", cwd=p)
+    plan = mig.plan_project(p)
+    step("migrate: avvisa per le righe che citano l'inizializzatore o --force",
+         any("--force" in w or "agent_context_init" in w for w in plan.warnings),
+         str(plan.warnings))
+    (p / ".keep-fresh" / "scripts" / "mio.py").write_text("x = 1\n", encoding="utf-8")
+    plan = mig.plan_project(p)
+    step("migrate: un file non tracciato in .keep-fresh/scripts fa saltare il progetto",
+         plan.skip_reason is not None and "mio.py" in plan.skip_reason, str(plan.skip_reason))
+
+    # 5. Una scrittura che fallisce non lascia il progetto a meta' e non ferma gli altri.
+    base = tmpdir("kf-projects-")
+    a = old_project(base, "a-bloccato")
+    b = old_project(base, "b-libero")
+    locked = a / ".codex" / "hooks.json"
+    os.chmod(locked, stat.S_IREAD)
+    try:
+        r = migrate(base, "--apply")
+    finally:
+        os.chmod(locked, stat.S_IWRITE | stat.S_IREAD)
+    step("migrate: una scrittura fallita lascia gli script, lo dice, e passa al prossimo",
+         "fallito" in r.stdout and (a / ".keep-fresh" / "scripts").exists()
+         and not (b / ".keep-fresh" / "scripts").exists(), r.stdout[-700:])
+
+    # 6. Il plugin cede il passo solo all'agente che ha ancora il vecchio aggancio.
+    p = old_project(tmpdir("kf-projects-"), "soloCodex")
+    (p / ".claude" / "settings.local.json").unlink()
+    (p / "core.py").write_text("x = 2\n", encoding="utf-8")
+    rc = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "claude", cwd=p,
+             stdin='{"session_id":"z1"}')
+    rx = run(sys.executable, HOOKS_SCRIPT, "stop", "--agent", "codex", cwd=p,
+             stdin='{"session_id":"z2"}')
+    step("vecchio aggancio solo per Codex: in Claude Code il plugin lavora, in Codex cede",
+         _blocks(rc, "") and not rx.stdout.strip()
+         and "ceduto al vecchio impianto" in hook_log(p), f"{rc.stdout[-200:]} | {hook_log(p)}")
+
+    # 7. Il lanciatore e' eseguibile per git: su macOS/Linux si lancia per percorso.
+    r = run("git", "ls-files", "-s", "plugins/keep-fresh/hooks/run-hook.cmd", cwd=REPO)
+    step("run-hook.cmd e' eseguibile (100755) nel repo", r.stdout.startswith("100755"),
+         r.stdout)
+
+    # 11. Il lint non rimanda all'inizializzatore che non esiste piu'.
+    root = git_repo(with_config=False)
+    run(sys.executable, INIT_SCRIPT, cwd=root)
+    r = run(sys.executable, LINT_SCRIPT, cwd=root)
+    step("lint senza commit: rimanda a /keep-fresh:init",
+         "/keep-fresh:init" in r.stdout and "agent_context_init" not in r.stdout,
+         _lint_lines(r.stdout))
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate, test_skills, test_no_old_code_location]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate, test_skills, test_no_old_code_location, test_review_fixes]
 
 
 def main() -> int:

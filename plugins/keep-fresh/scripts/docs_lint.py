@@ -46,6 +46,8 @@ import context_core as core  # noqa: E402
 # --------------------------------------------------------------------------- setup
 
 ROOT = core.repo_root() or Path(__file__).resolve().parent.parent.parent
+# La radice del plugin: i documenti citano i suoi file come `keep-fresh:scripts/...`.
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CONTEXT = ROOT / core.CONTEXT_DIR
 CONFIG, CONFIG_ERROR = core.load_config(ROOT)
 
@@ -224,8 +226,16 @@ def path_exists_anywhere(rel: str) -> bool:
     che sta in docs/, mentre chi lo cita e' in docs/keep-fresh/context/. Cercarlo solo dalla
     radice e solo accanto a chi lo cita produce un falso positivo, e i falsi positivi
     sono il modo in cui un lint smette di essere letto. Regge anche i glob (`lib/*.h`).
+
+    `keep-fresh:<percorso>` e' un file del plugin, non del progetto: i documenti lo
+    scrivono cosi' perche' il percorso del plugin cambia da macchina a macchina. Anche un
+    nome nudo come `docs_lint.py` puo' essere uno script del plugin.
     """
+    if rel.startswith("keep-fresh:"):
+        return (PLUGIN_ROOT / rel[len("keep-fresh:"):]).exists()
     if (ROOT / rel).exists():
+        return True
+    if "/" not in rel and (PLUGIN_ROOT / "scripts" / rel).is_file():
         return True
     try:
         for hit in ROOT.glob("**/" + rel):
@@ -440,7 +450,7 @@ def check_freshness(rep: Report):
             # Nessun commit ancora: non c'e' uno sha a cui ancorarsi, ed e' normale.
             rep.warn("FRESCHEZZA", "il repository non ha ancora un commit: la freschezza "
                                    "si misura dal primo. Dopo il commit rilancia "
-                                   "agent_context_init.py, che aggiunge il marcatore")
+                                   "/keep-fresh:init, che aggiunge il marcatore")
             return
         rep.error("FRESCHEZZA",
                   "status.md non ha il marcatore <!-- context-verified-at: <sha> -->: "

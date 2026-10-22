@@ -127,6 +127,31 @@ def old_install(root) -> bool:
     return root is not None and (Path(root) / TOOL_DIR / "scripts" / "agent_hooks.py").is_file()
 
 
+# Dove il vecchio impianto agganciava gli hook, per agente.
+OLD_HOOK_FILES = {"claude": (".claude/settings.local.json", ".claude/settings.json"),
+                  "codex": (".codex/hooks.json",)}
+
+
+def old_hooked(root, agent: str) -> bool:
+    """
+    Il vecchio impianto lavora ancora per QUESTO agente: ci sono gli script copiati e un
+    suo file di aggancio li invoca. Gli script senza aggancio non girano: lì il plugin
+    deve lavorare, o l'agente resta senza hook. Per un agente sconosciuto vale qualunque
+    file di aggancio.
+    """
+    if not old_install(root):
+        return False
+    files = OLD_HOOK_FILES.get(agent) or tuple(f for fs in OLD_HOOK_FILES.values() for f in fs)
+    for rel in files:
+        try:
+            if ".keep-fresh/scripts/agent_hooks.py" in (Path(root) / rel).read_text(
+                    encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def script_cmd(name: str, *args: str) -> str:
     """
     Il comando con cui l'agente lancia uno script del plugin, con il percorso assoluto:
