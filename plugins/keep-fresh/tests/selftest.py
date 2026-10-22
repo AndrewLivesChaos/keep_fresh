@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import date
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -83,19 +82,13 @@ def hook_log(root: Path) -> str:
 def new_project() -> Path:
     """
     Un progetto keep-fresh appena inizializzato: config.toml, scheletro di status.md con
-    il marcatore di freschezza, due commit. Fino a kf_init (Task 5 del piano) lo
-    scheletro e il marcatore vengono dal vecchio inizializzatore.
+    il marcatore di freschezza, due commit. Lo prepara kf_init, come per l'utente.
     """
-    sys.path.insert(0, str(REPO))
-    import agent_context_init as aci
-    root = git_repo()
-    st = root / STATUS_FILE
-    st.parent.mkdir(parents=True, exist_ok=True)
-    st.write_text(aci.STATUS_SKELETON.format(marker="", today=date.today().isoformat()),
-                  encoding="utf-8", newline="\n")
+    root = git_repo(with_config=False)
+    run(sys.executable, SCRIPTS / "kf_init.py", cwd=root)
     run("git", "add", "-A", cwd=root)
     run("git", "commit", "-q", "-m", "init", cwd=root)
-    aci.add_marker(root, False)
+    run(sys.executable, SCRIPTS / "kf_init.py", cwd=root)
     run("git", "add", "-A", cwd=root)
     run("git", "commit", "-q", "-m", "marcatore", cwd=root)
     return root
@@ -849,9 +842,119 @@ def test_injection_names_lint():
          r.stdout[-300:])
 
 
+# ------------------------------------------------------------------------------ kf_init
+
+INIT_SCRIPT = SCRIPTS / "kf_init.py"
+
+
+def snapshot(root: Path) -> dict:
+    """Percorso, dimensione e data di ogni file, .git compreso: per provare la sola lettura."""
+    out = {}
+    for q in root.rglob("*"):
+        if q.is_file():
+            st = q.stat()
+            out[q.relative_to(root).as_posix()] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def changed(before: dict, root: Path) -> list:
+    after = snapshot(root)
+    return sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+
+
+def fake_home(installed: dict) -> dict:
+    """
+    Una cartella home finta con le configurazioni di Claude Code date: {nome cartella:
+    versione installata o None}. Ritorna l'ambiente da usare.
+    """
+    home = tmpdir("kf-home-")
+    for name, version in installed.items():
+        cfg = home / name
+        (cfg / "plugins").mkdir(parents=True)
+        plugins = {} if version is None else {
+            "keep-fresh@keep-fresh": [{"scope": "user", "version": version}]}
+        (cfg / "plugins" / "installed_plugins.json").write_text(
+            json.dumps({"version": 2, "plugins": plugins}), encoding="utf-8")
+        enabled = {} if version is None else {"keep-fresh@keep-fresh": True}
+        (cfg / "settings.json").write_text(json.dumps({"enabledPlugins": enabled}),
+                                           encoding="utf-8")
+    env = dict(ENV, HOME=str(home), USERPROFILE=str(home))
+    for k in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
+        env.pop(k, None)
+    return env
+
+
+def test_kf_init():
+    root = git_repo(with_config=False)
+    r = run(sys.executable, INIT_SCRIPT, cwd=root)
+    step("repo vuoto: l'inizializzatore esce 0", r.returncode == 0, r.stderr[-600:])
+    step("init non scrive script ne' agganci",
+         (root / CONFIG_FILE).is_file() and (root / STATUS_FILE).is_file()
+         and not any((root / p).exists() for p in (
+             ".keep-fresh/scripts", ".keep-fresh/guide.md", ".keep-fresh/version.json",
+             ".claude/settings.local.json", ".codex/hooks.json")),
+         str(sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                    if ".git" not in p.parts)))
+    guide = PLUGIN / "guide.md"
+    step("il prompt indica la guida nel plugin",
+         str(guide) in r.stdout and guide.is_file(), r.stdout[-600:])
+
+    run("git", "add", "-A", cwd=root)
+    run("git", "commit", "-q", "-m", "init", cwd=root)
+    run(sys.executable, INIT_SCRIPT, cwd=root)
+    status_text = (root / STATUS_FILE).read_text(encoding="utf-8")
+    step("dopo il primo commit: marcatore aggiunto allo scheletro",
+         "context-verified-at:" in status_text, status_text[:300])
+    run("git", "add", "-A", cwd=root)
+    run("git", "commit", "-q", "-m", "marcatore", cwd=root)
+    r = run(sys.executable, LINT_SCRIPT, cwd=root)
+    step("progetto inizializzato: il lint esce 0", r.returncode == 0, _lint_lines(r.stdout))
+
+    (root / CONFIG_FILE).write_text("# mia taratura\n", encoding="utf-8")
+    (root / STATUS_FILE).write_text("# mio stato\n", encoding="utf-8")
+    run(sys.executable, INIT_SCRIPT, cwd=root)
+    step("init rilanciato non tocca config.toml ne' status.md scritti a mano",
+         (root / CONFIG_FILE).read_text(encoding="utf-8") == "# mia taratura\n"
+         and (root / STATUS_FILE).read_text(encoding="utf-8") == "# mio stato\n")
+    run("git", "checkout", "-q", "--", ".", cwd=root)
+
+    env = fake_home({".claude": "1.0.0", ".claude-x": None})
+    run(sys.executable, HANDOFF_SCRIPT, "new", "--title", "Per lo stato", cwd=root)
+    hdir = root / ".git" / "keep-fresh-handoff"
+    (hdir / "rotto.md").write_text("niente intestazione\n", encoding="utf-8")
+    before = snapshot(root)
+    r = run(sys.executable, INIT_SCRIPT, "--status", cwd=root, env=env)
+    step("--status riporta gli handoff aperti",
+         "Handoff aperti: 1" in r.stdout, r.stdout[-700:])
+    step("--status mette i file illeggibili fra le cose da sistemare",
+         r.stdout.count("rotto.md") >= 2 and "da sistemare" in r.stdout, r.stdout[-900:])
+    step("--status e' di sola lettura: nessun file cambia, .git compreso",
+         not changed(before, root), str(changed(before, root)))
+    lines = r.stdout.splitlines()
+    claude_line = next((l for l in lines if l.rstrip().endswith(os.sep + ".claude")), "")
+    other_line = next((l for l in lines if l.rstrip().endswith(".claude-x")), "")
+    step("--status dice dove il plugin e' installato",
+         "1.0.0" in claude_line and "non installato" in other_line, r.stdout[-900:])
+    shutil.rmtree(hdir)
+
+    (root / "tools").mkdir()
+    (root / "tools" / "agent_context_init.py").write_text("# copia\n", encoding="utf-8")
+    run("git", "add", "-A", cwd=root)
+    r = run(sys.executable, INIT_SCRIPT, "--status", cwd=root, env=env)
+    step("la copia vecchia dell'inizializzatore viene segnalata",
+         "tools/agent_context_init.py" in r.stdout, r.stdout[-600:])
+
+    old = root / ".keep-fresh" / "scripts"
+    old.mkdir()
+    (old / "agent_hooks.py").write_text("# vecchio\n", encoding="utf-8")
+    r = run(sys.executable, INIT_SCRIPT, "--status", cwd=root, env=env)
+    step("--status con il vecchio impianto: lo dice e indica /keep-fresh:migrate, esce 1",
+         r.returncode == 1 and "/keep-fresh:migrate" in r.stdout, r.stdout[-600:])
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init]
 
 
 def main() -> int:
