@@ -29,123 +29,69 @@ docs/keep-fresh/context/   contesto per l'agente: lo scrivi tu, lo leggono gli a
   status.md          stato corrente, difetti aperti, registro di collaudo, cronologia
 docs/                documentazione dell'applicazione, per le persone
 
-.keep-fresh/         la meccanica: la installa l'inizializzatore, non la scrivi tu
-  config.toml        taratura a mano del lint: eccezioni, correzioni alla rilevazione
-  guide.md           questa guida
-  version.json       quale versione dell'inizializzatore ha scritto questi file
+.keep-fresh/config.toml   taratura a mano del lint: eccezioni, correzioni alla rilevazione
+```
+
+La meccanica **non sta nel progetto**: sta nel plugin keep-fresh, installato una volta per
+configurazione dell'agente (Claude Code, Codex) e uguale per tutti i progetti.
+
+```
+plugin keep-fresh
   scripts/docs_lint.py     IL LIVELLO CHE ESEGUE — i documenti dicono ancora il vero?
   scripts/agent_hooks.py   hook di avvio, di fine turno e di ripresa, uguali per ogni agente
   scripts/context_core.py  comune a lint e hook: dove sta il codice, marcatori
   scripts/context_cost.py  quanto pesa il contesto: sessioni misurate, misura esatta
-
-aggancio degli hook, NON versionato, uno per agente e per macchina:
-.claude/settings.local.json  Claude Code
-.codex/hooks.json            Codex
+  scripts/handoff.py       gli handoff fra sessioni
+  guide.md                 questa guida
 ```
 
-Adatta i nomi al progetto, non la logica della divisione. **Scrivi gli script in Python**,
-non nella shell della piattaforma: devono girare uguali su Windows e su macOS, e due
-implementazioni della stessa cosa divergono — che è il problema che tutto questo esiste
-per evitare.
+Nei documenti del progetto **non scrivere i percorsi del plugin**: cambiano da macchina a
+macchina e da versione a versione. Per un comando si scrive il comando della skill
+(`/keep-fresh:lint`, `/keep-fresh:cost`, `/keep-fresh:handoff`); per indicare un file del
+plugin si scrive `keep-fresh:scripts/<file>.py` (per esempio `keep-fresh:scripts/agent_hooks.py`).
 
 ## Portare questa struttura su un altro progetto
 
-Non copiare file a mano: c'è **un inizializzatore**, `agent_context_init.py`, che è un
-solo file Python senza dipendenze e porta il payload dentro di sé. Lo si copia nel repo e
-lo si lancia; funziona anche in un repo appena creato con `git init`, senza codice.
+Non copiare file a mano: c'è **un comando**, `/keep-fresh:init`, che scrive nel progetto
+solo due **semi**, mai sovrascritti: `.keep-fresh/config.toml` (la taratura, vuota) e lo
+scheletro di `docs/keep-fresh/context/status.md`. Funziona anche in un repo appena creato
+con `git init`, senza codice. Prima fa una prova a vuoto, poi scrive. Alla fine stampa il
+prompt da incollare e una **diagnosi** di cosa non funziona ancora.
 
-```
-<python> agent_context_init.py --dry-run   # dice cosa farebbe
-<python> agent_context_init.py             # scrive lint, hook, aggancio, scheletri
-```
+Gli hook li porta il plugin: partono in ogni sessione, in ogni repository, e dove manca
+`.keep-fresh/config.toml` non fanno niente. Non c'è nessun aggancio da scrivere nel
+progetto, e nessun file locale da tenere fuori da git. **Non dichiarare mai gli hook di
+keep-fresh** in `.claude/settings.json`, `.claude/settings.local.json` o
+`.codex/hooks.json`: girerebbero due volte.
 
-**`<python>` in questa guida** vuol dire l'interprete della macchina in cui sei: `python` su
-Windows, `python3` su macOS e Linux (lì `python` di solito non esiste). Sostituiscilo tu
-quando lanci un comando; non riscrivere la guida per farlo.
+**Cosa va nel repository.** Alla fine vanno **versionati**:
 
-Crea in `.keep-fresh/` il lint, gli hook, il modulo comune, questa guida e una
-`config.toml` vuota; crea lo scheletro di `status.md` in `docs/keep-fresh/context/`; e aggancia gli hook nel file
-locale di **ogni agente supportato** (oggi Claude Code e Codex) **con l'interprete giusto
-per la macchina** (`python` su Windows, `python3` altrove). Il comando non contiene
-percorsi: la radice del repository la trova git a ogni esecuzione, quindi spostare la
-cartella non rompe gli hook. Non sovrascrive niente senza `--force`, ed è idempotente. Alla fine stampa il
-prompt da incollare e i passi che restano all'utente per ciascun agente.
-
-**L'aggancio degli hook non è versionato, di proposito.** Il comando contiene il nome
-dell'interprete, che è un fatto della macchina: in un file tracciato viaggerebbero con il repo e
-arriverebbero sbagliati altrove, e gli hook, essendo fail-open, non girerebbero senza
-dirlo. Per questo **non dichiarare mai gli hook in un file di configurazione versionato**,
-come `.claude/settings.json`: dichiarati sia lì sia nel file locale girano due volte. Il
-prezzo è che un clone appena fatto non ha hook finché non si lancia l'inizializzatore una
-volta su quella macchina: va detto all'utente.
-
-**Cosa va nel repository, e cosa no.** Alla fine i file dell'impianto devono essere
-**versionati**, perché sono il contesto e viaggiano coi cloni. Senza i primi, gli hook
-locali di un clone non trovano niente da eseguire; senza i secondi, chi clona non ha il
-contesto:
-
-- la meccanica: tutta `.keep-fresh/` (script, `config.toml`, `version.json`, questa guida)
-  e `.gitignore`;
+- `.keep-fresh/config.toml`;
 - il contesto: tutta `docs/keep-fresh/context/` (compreso `status.md`), `AGENTS.md`,
   `CLAUDE.md` e i documenti in `docs/`.
 
-Restano **fuori** da git i due file di aggancio, `.claude/settings.local.json` e
-`.codex/hooks.json`: contengono il nome dell'interprete della macchina, e `.gitignore` li
-esclude già. Se il repository verrà clonato su altre macchine, chiedi all'utente se vuole
-versionare anche una copia di `agent_context_init.py`, in `.keep-fresh/` e non nella radice:
-serve a rilanciarlo dopo ogni clone. La copia va tenuta uguale alla fonte e sostituita a
-ogni aggiornamento.
-
 Quanto a commit e push, vale la regola dichiarata dall'utente. Se ti permette di
-committare, fai commit separati per gli strumenti e per il contesto, dopo che il lint è
-uscito pulito. Non fare push e non committare i due file di aggancio, salvo che l'utente
-lo dica.
+committare, fai commit separati per la taratura e per il contesto, dopo che il lint è
+uscito pulito. Non fare push, salvo che l'utente lo dica.
 
-**Codex salta gli hook del repository senza avvisare** finché il progetto non è segnato
-come fidato e gli hook non sono stati approvati dall'utente con `/hooks` dentro Codex; va
-rifatto quando `.codex/hooks.json` cambia. L'agente non può farlo al posto dell'utente:
-glielo deve dire.
+**Codex salta gli hook dei plugin senza avvisare** finché l'utente non li ha approvati con
+`/hooks` dentro Codex. L'agente non può farlo al posto dell'utente: glielo deve dire.
 
 **Su un repo che ha già un contesto** non si perde niente: ogni file esistente viene
-rispettato, non sovrascritto. Ma proprio per questo resta **mezzo cablato**, e in modi
-silenziosi — è il caso che va gestito bene, non quello del repo vuoto:
+rispettato, non sovrascritto. Ma un `status.md` scritto prima **non ha i marcatori**: né
+`context-verified-at`, né i blocchi `session-start`. Gli hook girano e non hanno niente su
+cui lavorare. Per questo `/keep-fresh:init` chiude con la diagnosi: senza, l'utente crede di
+aver finito e ha in mano un impianto scollegato. Vale come regola generale: uno script che
+rispetta i file esistenti **deve** dire cosa ha lasciato a metà.
 
-- il file locale di un agente, se esiste, va **fuso**: aggiungere solo gli hook
-  mancanti e lasciare intatto il resto. Saltarlo perché esiste lascia gli script su disco
-  senza che niente li invochi, e gli hook sono fail-open: nessuno se ne accorge.
-  Sovrascriverlo cancella i permessi già configurati. Nessuna delle due è accettabile.
-- Un `status.md` scritto prima **non ha i marcatori**: né `context-verified-at`, né i
-  blocchi `session-start`. Gli hook girano e non hanno niente su cui lavorare.
+**Un progetto col vecchio impianto** (gli script copiati nel progetto, sotto `.keep-fresh/`, e gli hook
+agganciati in `.claude/settings.local.json` e `.codex/hooks.json`) si porta sul plugin con
+`/keep-fresh:migrate`, che lo fa per tutti i progetti in un colpo. Finché non è migrato,
+gli hook del plugin cedono il passo alla copia vecchia.
 
-Per questo l'inizializzatore chiude con una **diagnosi** che elenca cosa non funziona
-ancora e come sistemarlo. Senza, l'utente crede di aver finito e ha in mano un impianto
-scollegato. Vale come regola generale: uno script che rispetta i file esistenti **deve**
-dire cosa ha lasciato a metà.
-
-**Aggiornare un repo gia' inizializzato**: `--force` riscrive i file **gestiti** — lint,
-modulo comune, hook, guida — alla versione di riferimento, e **non tocca mai** i file
-**seme**, `docs/keep-fresh/context/status.md` e `.keep-fresh/config.toml`, che dal primo giorno
-contengono lavoro umano. La distinzione fra file gestiti e file seme e' quella che rende
-`--force` sicuro da usare: senza, aggiornare uno script significherebbe cancellare lo
-stato del progetto o la taratura, e nessuno lo farebbe mai.
-
-**Da un repo col layout precedente** (script in `scripts/`, contesto in `docs/context/`,
-guida in `docs/`): `--force` lo **migra**, e senza `--force` si rifiuta e non scrive
-niente. Sposta con `git mv`, così la storia dei file resta: `docs/context/` diventa
-`docs/keep-fresh/context/`, `docs/context/config.toml` diventa `.keep-fresh/config.toml`.
-Toglie i vecchi script gestiti e riscrive l'aggancio degli hook. Non tocca gli altri file
-di `scripts/`. Resta da fare a te un lavoro che lo script non sa fare: i documenti che
-citano ancora i vecchi percorsi. Il lint segnala quelli sotto `docs/keep-fresh/context/`;
-`AGENTS.md`, `CLAUDE.md` e il resto li trovi con `git grep`. I piani e le specifiche
-storici descrivono il passato: **non si riscrivono**.
-
-E' il caso che si presenta subito: un repo dove la guida era stata copiata a mano tempo
-prima ha una versione superata proprio del file che dice all'agente cosa fare. Va
-aggiornata, e il resto va lasciato stare.
-
-**Quello che l'inizializzatore NON fa è il contesto.** I documenti nascono solo leggendo
-il repo e chiedendo all'utente ciò che nel repo non c'è. Lo script prepara il terreno; il
-lavoro lo fa l'agente col prompt che ti stampa.
+**Quello che `/keep-fresh:init` NON fa è il contesto.** I documenti nascono solo leggendo
+il repo e chiedendo all'utente ciò che nel repo non c'è. Il comando prepara il terreno; il
+lavoro lo fa l'agente col prompt che stampa.
 
 **Dove sta il codice non si scrive da nessuna parte.** Lint e hook lo rilevano a ogni
 esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Un progetto che nasce
@@ -159,19 +105,19 @@ Restano vuote di proposito le tabelle `[lint.not_symbols]`, `[lint.expected_abse
 primo giro di lint. `not_symbols` in particolare contiene parole di prosa nella lingua dei
 documenti.
 
-**Non modificare gli script installati.** Sono gestiti: `--force` li riporta alla versione
-di riferimento. Una correzione fatta lì dentro si perde al primo aggiornamento; se serve,
-va fatta nello strumento, non nella copia.
+**Non modificare gli script del plugin dal progetto.** Una correzione va fatta nel
+repository di keep-fresh e rilasciata: così arriva a tutti i progetti.
 
-**Come chiederlo all'agente.** L'inizializzatore stampa il prompt, ed è questo. Due frasi
+**Come chiederlo all'agente.** `/keep-fresh:init` stampa il prompt, ed è questo. Due frasi
 cambiano l'esito, e vanno messe entrambe:
 
-> Leggi `.keep-fresh/guide.md` ed eseguilo su questo repository. **Sono istruzioni
-> operative, non la descrizione di un altro progetto.** Prima di scrivere, **chiedimi
-> quello che non è deducibile dal repo**: stato del lavoro, decisioni prese fuori dal
-> codice, verifiche fatte a mano. In `.keep-fresh/scripts/` trovi già il lint e gli hook
-> e **non vanno riscritti**: dove sta il codice lo rilevano da soli, restano da riempire
-> solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo giro.
+> Leggi la guida di keep-fresh (`keep-fresh:guide.md`) ed eseguila su questo repository.
+> **Sono istruzioni operative, non la descrizione di un altro progetto.** Prima di
+> scrivere, **chiedimi quello che non è deducibile dal repo**: stato del lavoro, decisioni
+> prese fuori dal codice, verifiche fatte a mano. Il lint e gli hook stanno nel plugin e
+> **non vanno scritti nel progetto**: dove sta il codice lo rilevano da soli, restano da
+> riempire solo le liste di dominio in `config.toml`, guardando i falsi positivi del primo
+> giro.
 
 Senza la prima, la guida viene letta come documentazione *sul* progetto di origine invece
 che come compito. Senza la seconda, i buchi vengono riempiti per plausibilità invece che
@@ -455,13 +401,10 @@ Esce non-zero se trova errori. Le scelte di progetto che contano:
 È tutta la differenza: `CLAUDE.md`, `AGENTS.md` e le skill dipendono dall'aderenza
 dell'agente, che è la variabile che sta fallendo. Un hook parte comunque.
 
-Gli **script** degli hook sono versionati e **uguali per ogni agente**
-(`.keep-fresh/scripts/agent_hooks.py`); il loro **aggancio** no. Il comando che li invoca contiene
-il nome dell'interprete, che cambia da macchina a macchina, quindi sta nella
-configurazione locale di ciascun agente, ignorata da git, e lo scrive l'inizializzatore su
-ogni macchina. Non spostarlo nella configurazione versionata "perché valga ovunque":
-arriverebbe sbagliato su un'altra macchina, e se resta anche nel file locale gli hook
-girano due volte.
+Gli **script** degli hook sono **uguali per ogni agente** (`keep-fresh:scripts/agent_hooks.py`)
+e li aggancia il plugin, uno per agente: nel progetto non c'è niente da agganciare. Non
+dichiararli anche nella configurazione del progetto "perché valga ovunque": girerebbero due
+volte.
 
 Gli script usano solo cio' che gli agenti supportati hanno in comune: all'avvio, testo su
 stdout; a fine turno, uscita `0` con `{"decision": "block", "reason": "..."}` su stdout.
@@ -522,8 +465,8 @@ Due proprietà non negoziabili:
 ### 3. La misura dei consumi — quanto pesa davvero il contesto
 
 ```
-<python> .keep-fresh/scripts/context_cost.py            resoconto: niente chiamate al modello
-<python> .keep-fresh/scripts/context_cost.py misura     misura esatta del contesto fisso (~$0,40)
+/keep-fresh:cost            resoconto: niente chiamate al modello
+/keep-fresh:cost misura     misura esatta del contesto fisso (~$0,40)
 ```
 
 Il resoconto legge ciò che gli agenti registrano — le trascrizioni di Claude Code e i
@@ -555,7 +498,7 @@ per compito, `/clear` fra un compito e l'altro, sottoagenti per le letture pesan
 decisioni di stamattina e i vicoli ciechi che non vuoi ripercorrere. Quando il contesto
 diventa troppo grande, l'hook di `prompt` ferma il messaggio una volta e propone di
 scrivere un handoff e cambiare sessione. **Lo scrivi tu**, con
-`handoff.py new --title "..."` (`python3` su macOS/Linux) e riempiendo il file:
+`/keep-fresh:handoff` e riempiendo il file che crea:
 
 - **Obiettivo**: cosa stavi ottenendo e per chi. Una riga, non la storia.
 - **Fatto**: separa cio' che e' finito *e verificato* da cio' che e' finito e basta.
@@ -573,7 +516,7 @@ scrivere un handoff e cambiare sessione. **Lo scrivi tu**, con
 Cancella la riga `<!-- handoff-vuoto ... -->` quando hai finito: finche' c'e', l'elenco
 segna l'handoff `(vuoto)`. **Niente credenziali, chiavi, token**, nemmeno se sono comparsi
 nella sessione: il file e' locale, ma resta su disco. La nuova sessione non lo legge da sola:
-vede una riga in elenco, e lo riprende l'utente con `/keep-fresh resume`.
+vede una riga in elenco, e lo riprende l'utente con `/keep-fresh:resume`.
 
 ## Procedura
 
@@ -648,7 +591,7 @@ E poi: **fai girare il lint completo e mostra l'output vero**, non un riassunto.
   segnalazioni, non correggere i documenti: **correggi i controlli** finché restano solo
   quelle vere, poi correggi i documenti. Un lint con dieci falsi positivi è peggio di
   nessun lint, perché insegna a ignorarlo.
-- **Il repo puo' non avere ancora un commit.** Lanciare l'inizializzatore prima del
+- **Il repo puo' non avere ancora un commit.** Lanciare `/keep-fresh:init` prima del
   primo commit e' legittimo, ma non c'e' nessuno sha a cui ancorare il marcatore di
   freschezza. Non scrivere un marcatore finto per far passare il controllo di presenza:
   ometterlo e segnalarlo e' l'unica opzione onesta, e il controllo va fatto sulla
@@ -677,22 +620,22 @@ E poi: **fai girare il lint completo e mostra l'output vero**, non un riassunto.
 - [ ] Le verifiche manuali sono un registro con `Esito | Data | Chi`, non una checklist.
 - [ ] Il lint esiste, è versionato, **gira pulito**, e il suo output è stato mostrato
       all'utente.
-- [ ] Gli script degli hook esistono, sono versionati e fail-open, e il loro aggancio sta
-      **solo** nella configurazione locale della macchina, non in quella versionata.
+- [ ] Il plugin keep-fresh è installato per ogni agente in uso, e nessun hook di keep-fresh
+      è dichiarato anche nella configurazione del progetto.
 - [ ] Gli hook sono stati **provati** nei casi
       taci / blocca / non ripetere / input malformato.
 - [ ] Esiste una traccia su file degli hook, e all'utente è stato spiegato come leggerla —
       non come «guardare se compare qualcosa a schermo».
 - [ ] Nessun path vecchio è rimasto nel repo, `.md` o no.
 - [ ] La regola su commit e push che l'utente ha dichiarato è stata rispettata.
-- [ ] `git status` non mostra file dell'impianto rimasti untracked, e i due file di aggancio
-      locali non sono stati committati.
+- [ ] `git status` non mostra file di keep-fresh rimasti untracked (`config.toml`, il
+      contesto).
 
 ## Cosa dire alla fine
 
 Riferisci: l'albero prodotto, l'output **vero** del lint e delle prove sugli hook, cosa hai
 chiesto all'utente e cosa hai dedotto, le informazioni che non sei riuscito a collocare, e
-**cosa non hai potuto verificare da qui** (l'import, l'aggancio degli hook nella sessione
+**cosa non hai potuto verificare da qui** (l'import, gli hook nella sessione
 successiva). Se una scelta ti sembrava sbagliata e l'hai fatta lo stesso perché richiesta,
 dillo.
 

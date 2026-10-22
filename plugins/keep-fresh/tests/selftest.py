@@ -1095,9 +1095,49 @@ def test_migrate():
          new == "usa /keep-fresh:handoff e /keep-fresh:init", new)
 
 
+# -------------------------------------------------------------------------------- skill
+
+USER_SKILLS = ("init", "status", "handoff", "resume", "migrate")
+MODEL_SKILLS = ("lint", "cost")
+
+
+def frontmatter(text: str) -> dict:
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    out = {}
+    for line in (m.group(1).splitlines() if m else []):
+        k, sep, v = line.partition(":")
+        if sep:
+            out[k.strip()] = v.strip()
+    return out
+
+
+def test_skills():
+    skills = {}
+    for name in USER_SKILLS + MODEL_SKILLS:
+        p = PLUGIN / "skills" / name / "SKILL.md"
+        skills[name] = p.read_text(encoding="utf-8") if p.is_file() else ""
+    fm = {n: frontmatter(t) for n, t in skills.items()}
+    step("skill: ci sono le sette, ognuna con name e description",
+         all(fm[n].get("name") == n and fm[n].get("description") for n in fm),
+         str({n: sorted(f) for n, f in fm.items()}))
+    step("skill: init, status, handoff, resume, migrate non sono invocabili dal modello; "
+         "lint e cost si'",
+         all(fm[n].get("disable-model-invocation") == "true" for n in USER_SKILLS)
+         and all("disable-model-invocation" not in fm[n] for n in MODEL_SKILLS),
+         str({n: fm[n].get("disable-model-invocation") for n in fm}))
+    cited = {m for t in skills.values() for m in re.findall(r"scripts>?/(\w+\.py)", t)}
+    missing = sorted(c for c in cited if not (SCRIPTS / c).is_file())
+    step("skill: ogni script citato esiste nel plugin", cited and not missing,
+         f"citati={sorted(cited)} mancanti={missing}")
+    texts = [(PLUGIN / "guide.md").read_text(encoding="utf-8"),
+             (PLUGIN / "templates" / "config.toml").read_text(encoding="utf-8")]
+    step("guida e taratura non citano .keep-fresh/scripts",
+         not any(".keep-fresh/scripts" in t for t in texts))
+
+
 # --------------------------------------------------------------------------------- main
 
-TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate]
+TESTS = [test_manifests, test_launcher, test_scripts, test_quiet_and_yield, test_injection_names_lint, test_kf_init, test_migrate, test_skills]
 
 
 def main() -> int:

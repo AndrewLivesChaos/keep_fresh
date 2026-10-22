@@ -1,14 +1,14 @@
 # Configurazione del contesto per agenti.
 #
-# Questo file e' TUO. L'inizializzatore lo crea se manca e non lo sovrascrive mai,
-# nemmeno con --force: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
+# Questo file e' TUO. /keep-fresh:init lo crea se manca e non lo sovrascrive mai,
+# nemmeno quando il plugin si aggiorna: qui dentro c'e' la taratura fatta a mano, e aggiornare gli
 # script non deve cancellarla.
 #
 # Dove sta il codice NON si scrive qui. Il lint e gli hook lo rilevano a ogni
 # esecuzione dai file che git conosce, tracciati e nuovi non ignorati. Fuori restano
 # documenti e binari, le directory di build e dipendenze, le directory che iniziano con
 # un punto e i file dell'impianto stesso. Per vedere cosa viene rilevato:
-#     <python> scripts/docs_lint.py   (python3 su macOS/Linux)
+#     /keep-fresh:lint
 # Qui si correggono solo gli errori di quella rilevazione.
 
 [code]
@@ -23,7 +23,7 @@ exclude = []
 # Il tetto, in caratteri, dei blocchi <!-- session-start --> di status.md che l'hook di
 # avvio inietta per intero a ogni sessione, /clear e compattazione. Oltre il tetto
 # inietta solo il loro indice (titoli e prima riga di ogni voce) e il lint avvisa. Quanto
-# pesa davvero in token lo misura: <python> scripts/context_cost.py
+# pesa davvero in token lo misura: /keep-fresh:cost
 max_injection_chars = 8000
 # L'avviso di ripresa: se una sessione riprende dopo una pausa piu' lunga della cache e
 # il suo contesto supera questa soglia in token, l'hook ferma il primo messaggio UNA
@@ -32,7 +32,7 @@ resume_warn_tokens = 100000
 # Durata della cache in minuti, usata solo quando la trascrizione non la dice (Codex).
 resume_cache_minutes = 60
 
-# L'handoff, per cambiare sessione senza perdere il filo (/keep-fresh handoff). Le tre
+# L'handoff, per cambiare sessione senza perdere il filo (/keep-fresh:handoff). Le tre
 # chiavi sono commentate con il loro valore: sono quelli del codice, si tolgono i
 # commenti solo per cambiarli.
 # Soglia di contesto, in token, oltre la quale l'hook ferma il messaggio UNA volta per
