@@ -245,7 +245,7 @@ def stop(data: dict) -> int:
 
 HANDOFF_MESSAGE = """Il contesto di questa sessione e' di {ctx} token (soglia {warn}: [context] handoff_warn_tokens in .keep-fresh/config.toml).
 
-- Per cambiare sessione senza perdere il filo: /keep-fresh handoff. L'agente scrive dove sei arrivato in un file locale; poi /clear o una sessione nuova. La nuova sessione vedra' l'handoff in elenco e lo riprendera' con /keep-fresh resume, se vorrai.
+- Per cambiare sessione senza perdere il filo: /keep-fresh:handoff. L'agente scrive dove sei arrivato in un file locale; poi /clear o una sessione nuova. La nuova sessione vedra' l'handoff in elenco e lo riprendera' con /keep-fresh:resume, se vorrai.
 - Se ti serve tutto questo contesto: reinvia lo stesso messaggio, non ti fermo una seconda volta in questa sessione."""
 
 
@@ -284,7 +284,7 @@ def prompt(data: dict) -> int:
 
     Se scattano insieme, parte un solo messaggio che li dice entrambi. Il messaggio fermato
     non arriva al modello e non costa niente. Reinviato, passa. I comandi che iniziano con
-    / passano sempre: fermare un /clear o un /keep-fresh handoff sarebbe fermare proprio il
+    / passano sempre: fermare un /clear o un /keep-fresh:handoff sarebbe fermare proprio il
     rimedio. Passano sempre anche i messaggi generati dall'agente (HARNESS_TAG): nessuno li
     reinvierebbe.
 

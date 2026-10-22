@@ -225,10 +225,10 @@ def index_text(root, now, cfg):
     if not items:
         return "", 0
     rows = ["Handoff aperti (non agire, non leggere; riprendi solo su richiesta "
-            "dell'utente, con /keep-fresh resume):"]
+            "dell'utente, con /keep-fresh:resume):"]
     rows += [line(n, e, root) for n, e in enumerate(items[:MAX_LISTED], 1)]
     if len(items) > MAX_LISTED:
-        rows.append(f"+{len(items) - MAX_LISTED} altri: /keep-fresh handoff --elenco")
+        rows.append(f"+{len(items) - MAX_LISTED} altri: /keep-fresh:handoff --elenco")
     return "\n".join(rows), len(items)
 
 
