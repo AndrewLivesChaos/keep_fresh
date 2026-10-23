@@ -81,9 +81,12 @@ plugin, e dove manca `.keep-fresh/config.toml` non fanno niente. Fuori dal repos
 `.git/`, gli hook tengono la loro traccia (`agent-hooks.log`) e gli handoff
 (`keep-fresh-handoff/`).
 
-Anche in una cartella vuota appena creata con `git init` funziona. Manca solo il marcatore
-di freschezza di `status.md`, perché non c'è ancora uno sha: dopo il primo commit si
-rilancia `/keep-fresh:init`, che lo aggiunge se lo scheletro è intatto.
+Anche in una cartella vuota appena creata con `git init` funziona. Il marcatore di
+freschezza di `status.md` vuole uno sha, quindi in un repository senza commit init fa un
+commit vuoto `Initial commit`, senza file dentro: cosa versionare resta una tua scelta. Se
+git lo rifiuta (per esempio senza `user.name`), init lo dice e prosegue senza marcatore:
+dopo il primo commit si rilancia `/keep-fresh:init`, che lo aggiunge se lo scheletro è
+intatto.
 
 ## La taratura: `.keep-fresh/config.toml`
 

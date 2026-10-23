@@ -165,6 +165,23 @@ def add_marker(root: Path, dry: bool) -> str:
     return f"marcatore di freschezza aggiunto allo scheletro di status.md ({sha})"
 
 
+def initial_commit(root: Path) -> str | None:
+    """Un commit vuoto, per avere uno sha. None, dicendo perche', se git lo rifiuta."""
+    r = subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "Initial commit"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       cwd=str(root))
+    sha = core.head_sha(root) if r.returncode == 0 else None
+    if sha:
+        print(f'  creato   commit vuoto "Initial commit" ({sha})\n')
+    else:
+        motivo = (r.stderr or r.stdout).strip().splitlines()
+        print('  NON fatto il commit vuoto "Initial commit": git ha risposto\n'
+              f"           {motivo[-1] if motivo else f'exit {r.returncode}'}\n"
+              "  status.md nasce senza marcatore: dopo il primo commit rilancia "
+              "/keep-fresh:init.\n")
+    return sha
+
+
 def put_seed(root: Path, rel: str, content: str, dry: bool) -> str:
     """Un seme si scrive solo se manca: da li' in poi contiene lavoro, ed e' dell'utente."""
     p = root / rel
@@ -461,12 +478,15 @@ def init(root: Path, dry: bool) -> int:
 
     status_existed = (root / STATUS_FILE).exists()
     sha = core.head_sha(root)
-    if sha is None and not status_existed:
-        # Detto prima di scrivere, perche' l'utente possa scegliere di fare prima il commit.
-        print("ATTENZIONE: il repository non ha ancora nessun commit. status.md nascerebbe\n"
-              "senza il marcatore di freschezza, e il lint non saprebbe dire quanto e'\n"
-              "vecchio. Puoi fare prima il primo commit, oppure procedere e rilanciare\n"
-              "/keep-fresh:init dopo il primo commit: il marcatore lo aggiunge allora.\n")
+    if sha is None:
+        # Il marcatore di freschezza vuole uno sha. Il commit e' vuoto: i file che ci sono
+        # gia' sono dell'utente, e cosa versionare lo decide lui.
+        print("Il repository non ha ancora nessun commit: per dare a status.md il marcatore\n"
+              "di freschezza serve uno sha.")
+        if dry:
+            print('  farei   un commit vuoto "Initial commit" (nessun file dentro)\n')
+        else:
+            sha = initial_commit(root)
     # In un repo senza commit non c'e' uno sha da scrivere: meglio nessun marcatore, che il
     # giro dopo il primo commit aggiunge, di un marcatore finto.
     marker = f"\n<!-- context-verified-at: {sha} -->\n" if sha else "\n"

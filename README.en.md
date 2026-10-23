@@ -79,9 +79,11 @@ into the project: the plugin brings them, and where `.keep-fresh/config.toml` is
 do nothing. Outside the tracked tree, in `.git/`, the hooks keep their trace
 (`agent-hooks.log`) and the handoffs (`keep-fresh-handoff/`).
 
-It also works in an empty folder just created with `git init`. Only the freshness marker of
-`status.md` is missing, because there is no sha yet: after the first commit run
-`/keep-fresh:init` again, and it adds it if the skeleton is untouched.
+It also works in an empty folder just created with `git init`. The freshness marker of
+`status.md` needs a sha, so in a repository with no commits init makes an empty
+`Initial commit`, with no files in it: what to version stays your choice. If git refuses it
+(for example without `user.name`), init says so and goes on without the marker: after the
+first commit run `/keep-fresh:init` again, and it adds it if the skeleton is untouched.
 
 ## Tuning: `.keep-fresh/config.toml`
 

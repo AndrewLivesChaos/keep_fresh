@@ -898,11 +898,34 @@ def test_kf_init():
          r.returncode == 1 and "git init" in r.stderr, r.stdout[-300:] + r.stderr[-300:])
 
     root = git_repo(with_config=False)
+    (root / "segreto.txt").write_text("non mio\n", encoding="utf-8")
     r = run(sys.executable, INIT_SCRIPT, "--dry-run", cwd=root)
-    step("senza commit: la prova a vuoto lo dice prima di scrivere",
-         "nessun commit" in r.stdout and "primo commit" in r.stdout, r.stdout[-600:])
+    step("senza commit: la prova a vuoto annuncia il commit vuoto e non lo fa",
+         "Initial commit" in r.stdout and not run("git", "rev-parse", "-q", "--verify",
+                                                  "HEAD", cwd=root).stdout.strip(),
+         r.stdout[-600:])
+
+    senza_nome = dict(ENV, GIT_CONFIG_GLOBAL=str(tmpdir() / "vuoto"), GIT_CONFIG_NOSYSTEM="1",
+                      GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="user.useConfigOnly",
+                      GIT_CONFIG_VALUE_0="true")
+    for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+              "GIT_COMMITTER_EMAIL", "EMAIL"):
+        senza_nome.pop(k, None)
+    altro = git_repo(with_config=False)
+    r = run(sys.executable, INIT_SCRIPT, cwd=altro, env=senza_nome)
+    step("commit iniziale impossibile (git senza identita'): init esce 0 e lo dice",
+         r.returncode == 0 and "Initial commit" in r.stdout
+         and (altro / STATUS_FILE).is_file(), r.stdout[-600:] + r.stderr[-300:])
+
     r = run(sys.executable, INIT_SCRIPT, cwd=root)
     step("repo vuoto: l'inizializzatore esce 0", r.returncode == 0, r.stderr[-600:])
+    files = run("git", "ls-tree", "-r", "--name-only", "HEAD", cwd=root).stdout.strip()
+    status_text = (root / STATUS_FILE).read_text(encoding="utf-8")
+    step("repo vuoto: commit vuoto 'Initial commit' e status.md nasce col marcatore",
+         run("git", "log", "--format=%s", cwd=root).stdout.strip() == "Initial commit"
+         and files == "" and "context-verified-at:" in status_text,
+         f"file nel commit: {files!r}\n{status_text[:200]}")
+    (root / "segreto.txt").unlink()
     step("init non scrive script ne' agganci",
          (root / CONFIG_FILE).is_file() and (root / STATUS_FILE).is_file()
          and not any((root / p).exists() for p in (
@@ -914,14 +937,14 @@ def test_kf_init():
     step("il prompt indica la guida nel plugin",
          str(guide) in r.stdout and guide.is_file(), r.stdout[-600:])
 
-    run("git", "add", "-A", cwd=root)
-    run("git", "commit", "-q", "-m", "init", cwd=root)
-    run(sys.executable, INIT_SCRIPT, cwd=root)
-    status_text = (root / STATUS_FILE).read_text(encoding="utf-8")
+    run("git", "add", "-A", cwd=altro)
+    run("git", "commit", "-q", "-m", "init", cwd=altro)
+    run(sys.executable, INIT_SCRIPT, cwd=altro)
+    status_text = (altro / STATUS_FILE).read_text(encoding="utf-8")
     step("dopo il primo commit: marcatore aggiunto allo scheletro",
          "context-verified-at:" in status_text, status_text[:300])
     run("git", "add", "-A", cwd=root)
-    run("git", "commit", "-q", "-m", "marcatore", cwd=root)
+    run("git", "commit", "-q", "-m", "semi", cwd=root)
     r = run(sys.executable, LINT_SCRIPT, cwd=root)
     step("progetto inizializzato: il lint esce 0", r.returncode == 0, _lint_lines(r.stdout))
 
@@ -1264,8 +1287,10 @@ def test_review_fixes():
          r.stdout)
 
     # 11. Il lint non rimanda all'inizializzatore che non esiste piu'.
-    root = git_repo(with_config=False)
-    run(sys.executable, INIT_SCRIPT, cwd=root)
+    # Senza init, che il commit iniziale lo fa: il caso e' un commit che git ha rifiutato.
+    root = git_repo()
+    (root / STATUS_FILE).parent.mkdir(parents=True)
+    (root / STATUS_FILE).write_text("# Stato\n", encoding="utf-8")
     r = run(sys.executable, LINT_SCRIPT, cwd=root)
     step("lint senza commit: rimanda a /keep-fresh:init",
          "/keep-fresh:init" in r.stdout and "agent_context_init" not in r.stdout,
