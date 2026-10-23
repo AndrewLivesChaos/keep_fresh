@@ -16,7 +16,9 @@ Gli script stanno in `../../scripts/` rispetto a questo file (in Claude Code:
 
 ## Prima di cominciare
 
-- Serve un repository git (`git rev-parse --show-toplevel`). Se non lo è, chiedi se fare `git init`.
+- Serve un repository git (`git rev-parse --show-toplevel`). Se non lo è, dillo
+  all'utente e chiedi se fare `git init` lì; non farlo senza il suo sì. Dopo `git init`
+  il repository non ha commit: vale il punto 2 della procedura.
 - Serve Python 3.14 o successivo: `python` su Windows, `python3` su macOS/Linux.
 - Lo script lavora sul repository **della cartella corrente**. Resta nella radice del
   progetto di destinazione.
@@ -24,7 +26,10 @@ Gli script stanno in `../../scripts/` rispetto a questo file (in Claude Code:
 ## Procedura
 
 1. **Prova a vuoto.** Non scrive nulla: `python "<scripts>/kf_init.py" --dry-run`
-2. **Mostra all'utente** cosa farebbe e aspetta il suo via libera.
+2. **Mostra all'utente** cosa farebbe e aspetta il suo via libera. Se la prova a vuoto
+   avvisa che **non c'è ancora nessun commit**, riportalo e fallo scegliere: fare prima
+   il primo commit (lo fai tu solo se te lo chiede), oppure procedere e rilanciare
+   `/keep-fresh:init` dopo il primo commit, che aggiunge il marcatore mancante.
 3. **Esegui davvero**, stesso comando senza `--dry-run`. Non tocca mai `status.md` né
    `config.toml` se esistono già.
 4. Se lo script dice che c'è **il vecchio impianto** (`.keep-fresh/scripts/`), non

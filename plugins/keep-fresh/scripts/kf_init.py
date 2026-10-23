@@ -461,6 +461,12 @@ def init(root: Path, dry: bool) -> int:
 
     status_existed = (root / STATUS_FILE).exists()
     sha = core.head_sha(root)
+    if sha is None and not status_existed:
+        # Detto prima di scrivere, perche' l'utente possa scegliere di fare prima il commit.
+        print("ATTENZIONE: il repository non ha ancora nessun commit. status.md nascerebbe\n"
+              "senza il marcatore di freschezza, e il lint non saprebbe dire quanto e'\n"
+              "vecchio. Puoi fare prima il primo commit, oppure procedere e rilanciare\n"
+              "/keep-fresh:init dopo il primo commit: il marcatore lo aggiunge allora.\n")
     # In un repo senza commit non c'e' uno sha da scrivere: meglio nessun marcatore, che il
     # giro dopo il primo commit aggiunge, di un marcatore finto.
     marker = f"\n<!-- context-verified-at: {sha} -->\n" if sha else "\n"

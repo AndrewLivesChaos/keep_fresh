@@ -891,7 +891,16 @@ def fake_home(installed: dict) -> dict:
 
 
 def test_kf_init():
+    fuori = tmpdir("kf-nogit-")
+    r = run(sys.executable, INIT_SCRIPT, "--dry-run", cwd=fuori,
+            env=dict(ENV, GIT_CEILING_DIRECTORIES=str(fuori.parent)))
+    step("fuori da git: la prova a vuoto esce 1 e propone git init",
+         r.returncode == 1 and "git init" in r.stderr, r.stdout[-300:] + r.stderr[-300:])
+
     root = git_repo(with_config=False)
+    r = run(sys.executable, INIT_SCRIPT, "--dry-run", cwd=root)
+    step("senza commit: la prova a vuoto lo dice prima di scrivere",
+         "nessun commit" in r.stdout and "primo commit" in r.stdout, r.stdout[-600:])
     r = run(sys.executable, INIT_SCRIPT, cwd=root)
     step("repo vuoto: l'inizializzatore esce 0", r.returncode == 0, r.stderr[-600:])
     step("init non scrive script ne' agganci",
