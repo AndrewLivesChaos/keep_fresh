@@ -1,148 +1,270 @@
 # keep-fresh
 
-*[Italiano](README.md)* — the guide, the skills and the scripts' messages are in Italian.
+*[Italiano](README.md)* — the agent guide, the skills and the scripts' messages are in Italian.
 
-A plugin for coding agents (Claude Code and Codex) that sets up a git repository so agents
-work in it with context that does not rot: context documents, a lint that checks they still
-tell the truth, and hooks that put the state of the work in front of the agent and stop it
-from ending a turn when the code changed and the state did not.
+**Project context for coding agents that stays true over time.**
+A plugin for **Claude Code** and **Codex**: it organises the documentation agents read,
+checks it against the code and keeps it up to date on every turn, with measured,
+controlled token usage.
 
-The plugin only does the mechanics. The agent writes the context, following the plugin's
-guide. The code lives **only in the plugin**: a released fix reaches every project with a
-plugin update, without touching them.
+## The problem
 
-> **What has been tested.** On **Windows 11** with **Python 3.14**: the plugin self-test on
-> throwaway repositories; the plugin installed from the marketplace in **Claude Code
-> 2.1.308** and **Codex 0.154.0**, with the hooks running in real sessions (`claude -p`,
-> `codex exec` after approval with `/hooks`). Not tested: macOS and Linux.
+A coding agent starts from scratch in every session. To work well it needs written context:
+what the project is, the rules it must not break, where the work stands. That context
+**goes stale silently**: the code changes, the documents do not, and the agent confidently
+follows instructions that are no longer true. On top of that, context that grows unchecked
+is paid for in tokens at every start.
+
+## What keep-fresh does
+
+- **Structures the context.** A single entry point (`AGENTS.md`) with routing tables to small,
+  topical documents (`docs/keep-fresh/context/`): the agent loads only what the task needs,
+  not everything. One context for every agent: Claude Code reads it through `CLAUDE.md`,
+  which imports `AGENTS.md`.
+- **Checks it against the code.** A documents lint verifies that the identifiers they cite
+  still exist, that links resolve, that every claim states whether it is verified, inferred
+  or assumed, and that the work state has not fallen behind the code.
+- **Keeps it up to date by itself.** Three hooks: at start they put the work state in front
+  of the agent; at end of turn they stop it, once, if it changed the code without updating
+  the state; before a message they warn when resuming a session would be expensive.
+- **Carries work across sessions.** With `/keep-fresh:handoff` the agent writes where it got
+  to, its decisions and dead ends; a fresh, lighter session picks it up with
+  `/keep-fresh:resume`.
+- **Makes cost measurable.** `/keep-fresh:cost` reports what the context really weighs,
+  session by session, telling measured numbers apart from estimates.
+- **Leaves the project clean.** It writes only two starter files in the repository; the code
+  lives in the plugin. A plugin update reaches every project without touching it.
+
+## Performance and usage
+
+| Item | Value | How it was obtained |
+|---|---|---|
+| Model calls made by the plugin | **none** (except `/keep-fresh:cost misura`, on request, about $0.40) | by design: hooks and lint are local Python scripts |
+| Hook duration | **0.2–0.3 s** (start ~0.27 s, end of turn ~0.20 s) | measured, small repository, Windows 11, Python 3.14; grows with repository size |
+| Lint duration | **~0.25 s** | measured, same conditions |
+| Context injected at start | **at most 8,000 characters** (about 2,000–2,500 tokens) | configurable cap; above it, only an index of the blocks, and the lint flags it |
+| Dependencies | **none** beyond Python and git | Python standard library |
+
+Where it saves:
+
+- **The injection cap.** In a real project, before the cap, the blocks loaded at every start
+  had grown to about 134,000 characters, in the order of 60,000 tokens paid for in every
+  session. With the cap a few thousand tokens remain, and the lint points at what to shorten.
+- **Resuming after a pause.** Once the prompt cache has expired, the first message writes the
+  whole context to the cache again instead of reading it: on Anthropic's price list a cache
+  write costs 12.5 to 20 times a cache read. With a large context the hook stops the message
+  once and says what it will cost; the stopped message never reaches the model and costs
+  nothing. Sent again, it goes through.
+- **Handoff.** Above a threshold (150,000 tokens by default) the hook suggests moving the work
+  to a new session: every later call re-reads a smaller context.
+- **Targeted loading.** Routing tables make the agent read only the documents of the task at
+  hand.
+
+Session costs computed by `/keep-fresh:cost` were compared with the cost Claude Code computes
+itself and matched to the seventh decimal place for Opus 5.5, Opus 5, Sonnet 5 and Haiku 4.5.
+For Codex the report gives tokens, not costs.
 
 ## Requirements
 
 - git;
 - Python **3.14** or later, reachable as `python` on Windows and `python3` on macOS/Linux
-  (the technical minimum is 3.11, for `tomllib`);
+  (the technical minimum is 3.11);
 - Claude Code or Codex.
 
 ## Install
 
-The repository `AndrewLivesChaos/keep_fresh` is the marketplace. Users install from `master`.
+The repository is the plugin's marketplace; install from the `master` branch.
 
 **Claude Code**, once per configuration:
 
-```powershell
+```bash
 claude plugin marketplace add AndrewLivesChaos/keep_fresh
 claude plugin install keep-fresh@keep-fresh
 ```
 
-Claude Code clones the marketplace with git and tries SSH first. On a machine without an SSH
-key for GitHub set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`, or updates from the `/plugin` panel
-may fail. If you use several Claude Code configurations (`CLAUDE_CONFIG_DIR`), repeat the two
-commands with that variable set: each configuration has its own copy.
+Claude Code tries to clone over SSH first. On a machine without an SSH key for GitHub set
+`CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`, or updates from the `/plugin` panel may fail. With several
+configurations (`CLAUDE_CONFIG_DIR`) repeat the two commands for each.
 
 **Codex:**
 
-```powershell
+```bash
 codex plugin marketplace add AndrewLivesChaos/keep_fresh
 codex plugin add keep-fresh@keep-fresh
 ```
 
-Then, inside Codex, run `/hooks` and approve the three keep-fresh hooks. **Without approval
-Codex skips them silently.** Approval is per plugin, not per project; according to the Codex
-documentation it has to be repeated only when a release changes the plugin's hook file.
+Then, inside Codex, open `/hooks` and approve the three keep-fresh hooks. **Without approval
+Codex skips them silently.** Approval is per plugin, not per project.
+
+## Getting started
+
+1. Open the agent at the root of your git repository and run `/keep-fresh:init`
+   (`$keep-fresh:init` in Codex). It does a dry run, asks for confirmation and writes the two
+   starter files.
+2. Init prints a prompt to paste: with it the agent reads the plugin guide, asks you what it
+   cannot infer from the code and writes the context (`AGENTS.md`, `CLAUDE.md`,
+   `docs/keep-fresh/context/`).
+3. The agent runs the lint until it is clean. Many findings on the first run are normal: fix
+   the tuning in `.keep-fresh/config.toml` first, then the documents.
+4. Review and commit the context and the tuning. From then on the hooks work by themselves.
+5. `/keep-fresh:status` tells you at any time whether plugin, hooks and lint are in order.
+
+It also works in a folder just created with `git init`: in a repository with no commits init
+makes an empty `Initial commit`, with no files, to have a reference point.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/keep-fresh:init` | prepares the current repository: dry run, confirmation, then writes the two seeds |
+| `/keep-fresh:init` | prepares the current repository: dry run, confirmation, then writes the two starter files |
 | `/keep-fresh:status` | read-only status: plugin, hooks, handoffs, lint, what to fix |
+| `/keep-fresh:lint` | the documents lint; the agent also runs it on its own |
 | `/keep-fresh:handoff` | the agent writes where you got to, to pick up in a new session (`--elenco`, `--scarta n`) |
 | `/keep-fresh:resume` | picks up a handoff (`n`, a word of the title, `--comunque`) |
-| `/keep-fresh:lint` | the documents lint; the agent also runs it on its own |
 | `/keep-fresh:cost` | how much the context weighs (`misura`, `--giorni N`) |
 | `/keep-fresh:migrate` | only for users of versions before 1.0.0, see below |
 
 In Codex the skills are invoked as `$keep-fresh:<name>`.
 
-## What it writes in the project
+## How it works
 
-Only two **seeds**, written when missing and never overwritten:
+### What it writes in the project
+
+Only two files, written when missing and never overwritten:
 
 | Path | What it is |
 |---|---|
-| `.keep-fresh/config.toml` | hand-made tuning |
+| `.keep-fresh/config.toml` | the lint tuning, edited by hand |
 | `docs/keep-fresh/context/status.md` | the skeleton of the work state |
 
-The rest of the context (`AGENTS.md`, `CLAUDE.md`, the other files in
-`docs/keep-fresh/context/`) is written by the agent following the guide. Hooks are not wired
-into the project: the plugin brings them, and where `.keep-fresh/config.toml` is missing they
-do nothing. Outside the tracked tree, in `.git/`, the hooks keep their trace
-(`agent-hooks.log`) and the handoffs (`keep-fresh-handoff/`).
+The rest of the context is written by the agent. Hooks are not wired into the project: the
+plugin brings them, and where `.keep-fresh/config.toml` is missing they do nothing. In `.git/`,
+so outside any commit, the plugin keeps the hooks' trace (`agent-hooks.log`) and the handoffs
+(`keep-fresh-handoff/`).
 
-It also works in an empty folder just created with `git init`. The freshness marker of
-`status.md` needs a sha, so in a repository with no commits init makes an empty
-`Initial commit`, with no files in it: what to version stays your choice. If git refuses it
-(for example without `user.name`), init says so and goes on without the marker: after the
-first commit run `/keep-fresh:init` again, and it adds it if the skeleton is untouched.
+### The lint
 
-## Tuning: `.keep-fresh/config.toml`
+| Check | What it verifies |
+|---|---|
+| 0. Configuration | what counts as code |
+| 1. Banned features | symbols that must not come back into the code |
+| 2. Identifiers | what the documents cite still exists |
+| 3. Evidence | every claim is marked verified, inferred or assumed |
+| 4. Links and anchors | references resolve |
+| 5. Freshness | `status.md` has not fallen behind the code |
+| 6. Weight | how much enters the context at every start |
 
-The lint detects the code by itself and reports it in check 0. If it is wrong, fix it in
-`[code]`: `include` for paths it must treat as code, `exclude` for paths it must not
-(generated code, vendored libraries). The four `[lint.*]` tables start **empty on purpose**:
-they are domain work, filled by looking at the false positives of the first lint run, with
-the reason written next to each entry. `[context] max_injection_chars` caps what the start
-hook injects in full from the `session-start` blocks of `status.md` (8000 by default); above
-it, only an index is injected and the lint warns.
+### The hooks
 
-## Context cost: `/keep-fresh:cost`
+The same for Claude Code and Codex:
 
-The report reads Claude Code transcripts and Codex `token_count` events for the sessions
-opened in this repository: calls, context at start and peak, cache writes and reads, list
-price. Every number is marked **[misurato]** (measured: recorded by the agent or by the exact
-measurement) or **[stimato]** (estimated: computed). `misura` runs headless Claude Code in a
-throwaway copy to measure exactly how many tokens the instructions and the injection weigh
-(about $0.40).
+- **at start** (`SessionStart`) they inject the work state from `status.md`, within the cap;
+- **at end of turn** (`Stop`) they block once if the code changed and `status.md` did not;
+- **before your message** (`UserPromptSubmit`) they warn, once, if resuming after a pause
+  would be expensive or if the context passed the handoff threshold. They never stop a `/`
+  command.
 
-## Switching sessions without losing the thread: handoff
+They are **fail-open**: an internal error never blocks your work. To know whether they run
+there is the trace `.git/agent-hooks.log`, summarised by `/keep-fresh:status`.
 
-When the context passes `handoff_warn_tokens` (150,000 by default), the prompt hook stops the
-message **once per session** and suggests `/keep-fresh:handoff`. It never stops a `/` command
-or messages the agent generates itself (the end notification of a sub-agent or of a
-background command, `<task-notification>`). The agent writes a file in `.git/keep-fresh-handoff/`
-with goal, done, decisions, dead ends and next step; in the new session the start hook adds a
-one-line index, and `/keep-fresh:resume` picks one up. Handoffs are **local** and never end up
-in a commit.
+### Tuning: `.keep-fresh/config.toml`
 
-## Hooks
+- `[code]`: `include` and `exclude` correct the automatic code detection (generated code,
+  vendored libraries, folders starting with a dot).
+- `[lint.*]`: the lint's exceptions. They start **empty on purpose** and are filled by looking
+  at the false positives of the first run, with the reason written next to each entry.
+- `[context]`: `max_injection_chars` (8000), `handoff_warn_tokens` (150,000), `handoff_ore`
+  (48) and `handoff_prune_giorni` (30). If the injection cap is not enough, the fix is to
+  shorten the blocks in `status.md`, not to raise it.
 
-The same for every agent (`plugins/keep-fresh/scripts/agent_hooks.py`): **at start** they inject
-the work state from `status.md`; **at end of turn** they block once if the code changed and
-`status.md` did not; **before your message** they stop it once after a pause longer than the
-cache with a large context, or above `handoff_warn_tokens`. They are **fail-open**: an internal
-error exits 0 without output, so the only way to know they run is the trace
-`.git/agent-hooks.log`, summarised by `/keep-fresh:status`.
+### Context cost: `/keep-fresh:cost`
+
+```
+/keep-fresh:cost                 report, calls no model
+/keep-fresh:cost --giorni 30     recent sessions only
+/keep-fresh:cost misura          exact measurement of the fixed tokens (about $0.40)
+```
+
+The report reads Claude Code transcripts and Codex token counts for the sessions opened in the
+repository: calls, context at start and peak, cache writes and reads, list price. Every number
+is marked **[misurato]** (measured) or **[stimato]** (estimated). `misura` runs headless Claude
+Code in a throwaway copy and compares totals with and without the context; every measurement
+is taken twice and must match, or it is not saved.
+
+### Handoff
+
+1. Above `handoff_warn_tokens` the hook stops the message once and suggests a handoff.
+2. `/keep-fresh:handoff`: the agent writes goal, work done, decisions, dead ends and next step.
+   Then `/clear` or a new session.
+3. At start the hook shows an index of open handoffs (at most five), without loading their
+   content.
+4. `/keep-fresh:resume` picks up the chosen one. If it was written on another branch it says so
+   and does not consume it; `--comunque` picks it up anyway.
+
+Handoffs stay **local**, in `.git/`, and never end up in a commit.
 
 ## Update
 
-```powershell
-claude plugin update keep-fresh@keep-fresh     # in every configuration
+```bash
+claude plugin update keep-fresh@keep-fresh     # in every Claude Code configuration
 codex plugin marketplace upgrade               # Codex
 ```
 
-Or enable auto-update for the marketplace in Claude Code's `/plugin` panel. An update arrives
-only when the plugin version changes. `config.toml` and `status.md` are never touched.
+Or, in Claude Code, `/plugin` → *Marketplaces* → keep-fresh → *Enable auto-update*. An update
+arrives when the plugin version changes. `config.toml` and `status.md` are never touched.
 
 ## From versions before 1.0.0
 
 Before 1.0.0 keep-fresh copied its scripts into every project (`.keep-fresh/scripts/`) and wired
-the hooks in `.claude/settings.local.json` and `.codex/hooks.json`. Install the plugin, then run
-`/keep-fresh:migrate --root <folder>`: a dry run over every project under that folder, then,
-with your confirmation, it removes the copies and the old hooks and rewrites the documents'
-commands. It skips projects with uncommitted changes in the files it would touch, and never
-commits. Until a project is migrated, the plugin hooks step aside for its old copy.
+the hooks in `.claude/settings.local.json` and `.codex/hooks.json`. To move to the plugin:
+
+1. install the plugin in every configuration;
+2. in the project run `/keep-fresh:migrate --root .` (or `--root <folder>` for every project
+   under a folder). It does a dry run and writes only with your confirmation: it removes the
+   copied scripts and the old hooks and updates the commands cited in the documents. It skips,
+   saying so, projects with uncommitted changes in the files it would touch. It never commits;
+3. review the `git diff` and commit;
+4. remove old hand-copied skills (`~/.claude/skills/keep-fresh` and the like).
+
+Until a project is migrated, the plugin hooks step aside for its old copy: only one setup ever
+runs.
+
+## Troubleshooting
+
+- **"Non sei dentro un repository git"** (not inside a git repository): run `git init` first.
+- **`.git/agent-hooks.log` stays empty**: the plugin is not installed or is disabled in that
+  configuration (`/keep-fresh:status` says so); with Codex, the hooks were not approved with
+  `/hooks`. If the trace says `ceduto al vecchio impianto`, the project needs migrating.
+- **Nothing shows at start**: that is normal. What the start hook produces goes into the
+  agent's context, not to the screen.
+- **The lint reports dozens of missing identifiers on the first run**: that is normal. Fix the
+  tuning first, then the documents. A finding that describes a real defect is not silenced:
+  it is recorded in `status.md` as open work.
+
+## What has been tested
+
+- **Windows 11, Python 3.14**: the plugin self-test; the plugin installed from the marketplace
+  in Claude Code 2.1.308 and Codex 0.154.0, with the hooks verified in real sessions.
+- **macOS**: installation from the marketplace succeeded; hook behaviour not yet verified.
+- **Linux**: not tested.
+- The exact measurement in `/keep-fresh:cost` uses Claude Code only.
 
 ## Developing keep-fresh
+
+```
+.claude-plugin/marketplace.json      marketplace for Claude Code
+.agents/plugins/marketplace.json     marketplace for Codex
+plugins/keep-fresh/                  the plugin
+  .claude-plugin/plugin.json         Claude Code manifest (version)
+  .codex-plugin/plugin.json          Codex manifest (version, hook file)
+  hooks/hooks.json                   hooks for Claude Code, through hooks/run-hook.cmd
+  hooks/codex-hooks.json             hooks for Codex
+  scripts/                           lint, hooks, handoff, cost, init, migrate
+  skills/<command>/SKILL.md          one skill per command
+  guide.md                           the guide the agent follows
+  templates/config.toml              the starter tuning file
+  tests/selftest.py                  the self-test
+```
 
 - Work happens on `develop`; `master` is what users install.
 - To try a change without touching your projects: `claude --plugin-dir ./plugins/keep-fresh`
