@@ -22,8 +22,8 @@ is paid for in tokens at every start.
   not everything. One context for every agent: Claude Code reads it through `CLAUDE.md`,
   which imports `AGENTS.md`.
 - **Checks it against the code.** A documents lint verifies that the identifiers they cite
-  still exist, that links resolve, that every claim states whether it is verified, inferred
-  or assumed, and that the work state has not fallen behind the code.
+  still exist, that links resolve, that whatever is stated as verified carries the date of
+  the check, and that the work state has not fallen behind the code.
 - **Keeps it up to date by itself.** Three hooks: at start they put the work state in front
   of the agent; at end of turn they stop it, once, if it changed the code without updating
   the state; before a message they warn when resuming a session would be expensive.
@@ -148,7 +148,7 @@ so outside any commit, the plugin keeps the hooks' trace (`agent-hooks.log`) and
 | 0. Configuration | what counts as code |
 | 1. Banned features | symbols that must not come back into the code |
 | 2. Identifiers | what the documents cite still exists |
-| 3. Evidence | every claim is marked verified, inferred or assumed |
+| 3. Evidence | every "verified" carries the date of the check, and conversational labels (`[Certo]`, `[Probabile]`, `[Ipotesi]`) stay out of the documents |
 | 4. Links and anchors | references resolve |
 | 5. Freshness | `status.md` has not fallen behind the code |
 | 6. Weight | how much enters the context at every start |

@@ -22,9 +22,9 @@ controllo si paga in token a ogni avvio.
   serve al compito, non tutto. Un solo contesto per tutti gli agenti: Claude Code lo legge
   da `CLAUDE.md`, che importa `AGENTS.md`.
 - **Lo verifica contro il codice.** Un lint dei documenti controlla che gli identificatori
-  citati esistano ancora, che i link risolvano, che ogni affermazione dichiari se è
-  verificata, dedotta o assunta, e che lo stato del lavoro non sia rimasto indietro rispetto
-  al codice.
+  citati esistano ancora, che i link risolvano, che ciò che è dichiarato verificato porti
+  la data della verifica, e che lo stato del lavoro non sia rimasto indietro rispetto al
+  codice.
 - **Lo tiene aggiornato da sé.** Tre hook: all'avvio mettono lo stato del lavoro davanti
   all'agente; a fine turno lo fermano, una volta, se ha cambiato il codice senza aggiornare
   lo stato; prima di un messaggio avvisano quando riprendere una sessione costerebbe caro.
@@ -154,7 +154,7 @@ da ogni commit, il plugin tiene la traccia degli hook (`agent-hooks.log`) e gli 
 | 0. Configurazione | cosa viene considerato codice |
 | 1. Feature bandite | simboli che non devono tornare nel codice |
 | 2. Identificatori | ciò che i documenti citano esiste ancora |
-| 3. Evidenza | ogni affermazione è marcata verificata, dedotta o assunta |
+| 3. Evidenza | ogni "verificato" porta la data della verifica, e il linguaggio da conversazione (`[Certo]`, `[Probabile]`, `[Ipotesi]`) resta fuori dai documenti |
 | 4. Link e ancore | i rimandi risolvono |
 | 5. Freschezza | `status.md` non è rimasto indietro rispetto al codice |
 | 6. Peso | quanto entra nel contesto a ogni avvio |
