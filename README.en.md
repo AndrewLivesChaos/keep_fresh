@@ -122,7 +122,6 @@ makes an empty `Initial commit`, with no files, to have a reference point.
 | `/keep-fresh:handoff` | the agent writes where you got to, to pick up in a new session (`--elenco`, `--scarta n`) |
 | `/keep-fresh:resume` | picks up a handoff (`n`, a word of the title, `--comunque`) |
 | `/keep-fresh:cost` | how much the context weighs (`misura`, `--giorni N`) |
-| `/keep-fresh:migrate` | only for users of versions before 1.0.0, see below |
 
 In Codex the skills are invoked as `$keep-fresh:<name>`.
 
@@ -213,28 +212,12 @@ codex plugin marketplace upgrade               # Codex
 Or, in Claude Code, `/plugin` → *Marketplaces* → keep-fresh → *Enable auto-update*. An update
 arrives when the plugin version changes. `config.toml` and `status.md` are never touched.
 
-## From versions before 1.0.0
-
-Before 1.0.0 keep-fresh copied its scripts into every project (`.keep-fresh/scripts/`) and wired
-the hooks in `.claude/settings.local.json` and `.codex/hooks.json`. To move to the plugin:
-
-1. install the plugin in every configuration;
-2. in the project run `/keep-fresh:migrate --root .` (or `--root <folder>` for every project
-   under a folder). It does a dry run and writes only with your confirmation: it removes the
-   copied scripts and the old hooks and updates the commands cited in the documents. It skips,
-   saying so, projects with uncommitted changes in the files it would touch. It never commits;
-3. review the `git diff` and commit;
-4. remove old hand-copied skills (`~/.claude/skills/keep-fresh` and the like).
-
-Until a project is migrated, the plugin hooks step aside for its old copy: only one setup ever
-runs.
-
 ## Troubleshooting
 
 - **"Non sei dentro un repository git"** (not inside a git repository): run `git init` first.
 - **`.git/agent-hooks.log` stays empty**: the plugin is not installed or is disabled in that
   configuration (`/keep-fresh:status` says so); with Codex, the hooks were not approved with
-  `/hooks`. If the trace says `ceduto al vecchio impianto`, the project needs migrating.
+  `/hooks`.
 - **Nothing shows at start**: that is normal. What the start hook produces goes into the
   agent's context, not to the screen.
 - **The lint reports dozens of missing identifiers on the first run**: that is normal. Fix the
@@ -259,7 +242,7 @@ plugins/keep-fresh/                  the plugin
   .codex-plugin/plugin.json          Codex manifest (version, hook file)
   hooks/hooks.json                   hooks for Claude Code, through hooks/run-hook.cmd
   hooks/codex-hooks.json             hooks for Codex
-  scripts/                           lint, hooks, handoff, cost, init, migrate
+  scripts/                           lint, hooks, handoff, cost, init
   skills/<command>/SKILL.md          one skill per command
   guide.md                           the guide the agent follows
   templates/config.toml              the starter tuning file

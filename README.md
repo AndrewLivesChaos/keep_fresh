@@ -128,7 +128,6 @@ init fa un commit vuoto `Initial commit`, senza file, per avere un punto di rife
 | `/keep-fresh:handoff` | l'agente scrive dove sei arrivato, per riprendere in una sessione nuova (`--elenco`, `--scarta n`) |
 | `/keep-fresh:resume` | riprende un handoff (`n`, una parola del titolo, `--comunque`) |
 | `/keep-fresh:cost` | quanto pesa il contesto (`misura`, `--giorni N`) |
-| `/keep-fresh:migrate` | solo per chi usava le versioni prima della 1.0.0, vedi sotto |
 
 In Codex le skill si invocano con `$keep-fresh:<nome>`.
 
@@ -221,30 +220,12 @@ Oppure, in Claude Code, `/plugin` → *Marketplaces* → keep-fresh → *Enable 
 Un aggiornamento arriva quando cambia la versione del plugin. `config.toml` e `status.md` non
 vengono mai toccati.
 
-## Dalle versioni prima della 1.0.0
-
-Prima della 1.0.0 keep-fresh copiava gli script in ogni progetto (`.keep-fresh/scripts/`) e
-agganciava gli hook in `.claude/settings.local.json` e `.codex/hooks.json`. Per passare al
-plugin:
-
-1. installa il plugin in tutte le configurazioni;
-2. nel progetto lancia `/keep-fresh:migrate --root .` (oppure `--root <cartella>` per tutti i
-   progetti sotto una cartella). Fa una prova a vuoto e scrive solo con la tua conferma:
-   toglie gli script copiati e i vecchi hook e aggiorna i comandi citati nei documenti. Salta,
-   dicendolo, i progetti con modifiche non committate nei file da toccare. Non committa;
-3. controlla il `git diff` e committa;
-4. togli le vecchie skill copiate a mano (`~/.claude/skills/keep-fresh` e simili).
-
-Finché un progetto non è migrato, gli hook del plugin cedono il passo alla sua copia
-vecchia: lavora sempre un solo impianto.
-
 ## Se qualcosa non torna
 
 - **"Non sei dentro un repository git"**: serve `git init` prima.
 - **`.git/agent-hooks.log` resta vuoto**: il plugin non è installato o è disattivato in
   quella configurazione (`/keep-fresh:status` lo dice); con Codex, gli hook non sono stati
-  approvati con `/hooks`. Se la traccia dice `ceduto al vecchio impianto`, il progetto va
-  migrato.
+  approvati con `/hooks`.
 - **All'avvio non si vede niente**: è normale. Ciò che l'hook di avvio produce va nel
   contesto dell'agente, non a schermo.
 - **Il lint segnala decine di identificatori inesistenti al primo giro**: è normale. Prima si
@@ -270,7 +251,7 @@ plugins/keep-fresh/                  il plugin
   .codex-plugin/plugin.json          manifesto Codex (version, file di hook)
   hooks/hooks.json                   hook per Claude Code, via hooks/run-hook.cmd
   hooks/codex-hooks.json             hook per Codex
-  scripts/                           lint, hook, handoff, costi, init, migrate
+  scripts/                           lint, hook, handoff, costi, init
   skills/<comando>/SKILL.md          una skill per comando
   guide.md                           la guida che l'agente esegue
   templates/config.toml              il file iniziale della taratura
